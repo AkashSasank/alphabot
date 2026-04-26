@@ -17,6 +17,7 @@ wheels/
 # IDE/editor files
 .vscode/
 .idea/
+.candle_cache/
 *.iml
 *.ipynb_checkpoints
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from getpass import getpass
 from time import sleep
 from typing import Any, Callable, Dict, List
 
@@ -167,27 +166,25 @@ class BotManager:
 
     def __init__(
         self,
-        session_config: Dict[str, Any],
         api_config: Dict[str, Any] | None = None,
         socket_config: Dict[str, Any] | None = None,
     ) -> None:
-        """Initialize BotManager with session and shared components.
+        """Initialize BotManager with shared components.
+
+        Session configuration is composed internally by KiteSessionManager
+        from environment variables or user prompts.
 
         Args:
-            session_config: Configuration for KiteSessionManager.
-                Required: api_key, api_secret, user_id.
-                Optional: password, pin, headless, timeout_ms, etc.
             api_config: Optional configuration for KiteCandleAPIProvider.
                 Optional keys: default_exchange
             socket_config: Optional configuration for KiteWebSocketClient.
                 Optional keys: ws_mode, ws_debug, ws_reconnect, etc.
         """
-        self.session_config = session_config
         self.api_config = api_config or {}
         self.socket_config = socket_config or {}
 
-        # Initialize session
-        session_manager = KiteSessionManager(session_config)
+        # Initialize session with internal config composition
+        session_manager = KiteSessionManager()
 
         # Check for cached token first
         if (
@@ -197,34 +194,10 @@ class BotManager:
             print("✅ Using cached access token - no login needed!")
             self.session: KiteSession = session_manager.create_session()
         else:
-            # Prompt for credentials if not in config
+            # Run full login flow if no valid cached token
             print("\n" + "=" * 60)
-            print("🔐 LOGIN REQUIRED")
+            print("🔐 RUNNING FULL LOGIN FLOW")
             print("=" * 60)
-
-            pwd_missing = (
-                "password" not in self.session_config
-                or not self.session_config.get("password")
-            )
-            if pwd_missing:
-                print("\nPassword not found in configuration.")
-                password = getpass("Enter your Zerodha password: ")
-                self.session_config["password"] = password
-            else:
-                print("✓ Password loaded from configuration")
-
-            pin_missing = (
-                "pin" not in self.session_config or not self.session_config.get("pin")
-            )
-            if pin_missing:
-                print("\nPIN not found in configuration.")
-                pin = input("Enter your 6-digit Kite PIN " "(Mobile App Code & 2FA): ")
-                self.session_config["pin"] = pin
-            else:
-                print("✓ PIN loaded from configuration")
-
-            # Recreate manager with credentials and create session
-            session_manager = KiteSessionManager(self.session_config)
             self.session: KiteSession = session_manager.create_session()
 
         # Initialize shared API and socket
@@ -583,16 +556,11 @@ class BotManager:
         date: datetime,
     ) -> List[Candle | Dict[str, Any]]:
         """Fetch historical candles for a specific backtest timestamp."""
-        try:
-            return self.api.fetch_candles(
-                symbol=bot.ticker.name,
-                interval=bot.ticker.interval,
-                limit=limit,
-                as_of=date,
-            )
-        except TypeError:
-            return self.api.fetch_candles(
-                symbol=bot.ticker.name,
-                interval=bot.ticker.interval,
-                limit=limit,
-            )
+        interval_delta = self._interval_to_timedelta(bot.ticker.interval)
+        from_date = date - interval_delta * max(limit + 5, limit)
+        return self.api.fetch_candles(
+            symbol=bot.ticker.name,
+            interval=bot.ticker.interval,
+            from_date=from_date,
+            to_date=date,
+        )

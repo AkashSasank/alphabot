@@ -39,6 +39,9 @@ class CandleBuilder:
         )
 
 
+candle_builder = CandleBuilder()
+
+
 class CandleProperties(BaseModel):
     """Derived candle metrics used for pattern classification and analysis."""
 
@@ -162,6 +165,31 @@ class Candle(BaseModel):
             return None
 
         return numerator / denominator
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a flattened dictionary representation of the candle.
+
+        Flattens all candle properties into a single level with namespaced keys.
+        """
+        flattened = {
+            "timestamp": self.timestamp,
+            "open": self.open,
+            "high": self.high,
+            "low": self.low,
+            "close": self.close,
+            "volume": self.volume,
+            "candle_type": self.properties.candle_type.value,
+            "candle_color": self.properties.candle_color.value,
+            "body_size": self.properties.body_size,
+            "upper_wick_size": self.properties.upper_wick_size,
+            "lower_wick_size": self.properties.lower_wick_size,
+            "total_wick_size": self.properties.total_wick_size,
+            "range_size": self.properties.range_size,
+            "upper_to_lower_wick_ratio": self.properties.upper_to_lower_wick_ratio,
+            "wick_to_body_ratio": self.properties.wick_to_body_ratio,
+            "body_to_range_ratio": self.properties.body_to_range_ratio,
+        }
+        return flattened
 
     def __repr__(self) -> str:
         """Return a concise debug representation with full candle payload."""

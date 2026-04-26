@@ -1,11 +1,7 @@
 """Public package exports for tradingbot."""
-
-from tradingbot.feature_extractor import (
-    HistoricalFeatureExtractor,
-    extract_features_command,
-)
+from tradingbot.core.ticker import Ticker, TickerData
 
 __all__ = [
-    "HistoricalFeatureExtractor",
-    "extract_features_command",
+    "Ticker",
+    "TickerData",
 ]

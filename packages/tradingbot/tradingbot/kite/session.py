@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 from dataclasses import dataclass, field
 from datetime import datetime
+from getpass import getpass
 from importlib import import_module
 from pathlib import Path
 from typing import Any, Dict
 from urllib.parse import parse_qs, urlparse
 
+from kiteconnect import KiteConnect
+
+LOGGER = logging.getLogger(__name__)
 _DEFAULT_TIMEOUT_MS = 45_000
 
 
@@ -15,18 +21,13 @@ _DEFAULT_TIMEOUT_MS = 45_000
 class KiteSession:
     """Authenticated Kite session used by candle APIs.
 
-    The ``credentials`` field intentionally stores credential inputs from
-    config so downstream components can reuse them if required.
+    Stores only non-sensitive session data. Credentials like password and PIN
+    are not persisted. The ``credentials`` field stores only user_id, which is
+    needed for session operations.
     """
 
-    kite: Any
-    api_key: str
-    credentials: Dict[str, str]
-    request_token: str
-    access_token: str
-    public_token: str | None = None
-    login_time: datetime = field(default_factory=datetime.utcnow)
-    raw_session_data: Dict[str, Any] = field(default_factory=dict)
+    kite: KiteConnect
+    session_cache: Dict[str, Any] = field(default_factory=dict)
 
 
 class KiteSessionManager:
@@ -36,30 +37,28 @@ class KiteSessionManager:
     Playwright-based browser automation, and session initialization.
     """
 
-    def __init__(self, config: Dict[str, Any]) -> None:
-        """Initialize session manager with configuration.
+    def __init__(self) -> None:
+        """Initialize session manager and compose configuration.
 
-        Required config keys (for authentication):
-        - api_key: Kite API key
-        - api_secret: Kite API secret
-        - user_id: Zerodha user ID or email (for first login screen)
+        Configuration is composed internally from environment variables or
+        user prompts if not set. Required config includes:
+        - KITE_API_KEY: Kite API key
+        - KITE_API_SECRET: Kite API secret
+        - KITE_USER_ID: Zerodha user ID or email (for first login screen)
+        - KITE_PASSWORD: Zerodha account password (optional if token cached)
+        - KITE_PIN: 6-digit Kite Mobile App Code AND 2FA PIN (optional if token cached)
 
-        Optional for cached token usage:
-        - password: Zerodha account password (only needed if token not cached)
-        - pin: 6-digit Kite Mobile App Code AND 2FA PIN (only needed if token not cached)
-
-        Optional config keys:
-        - headless (bool, default False - shows browser window)
-        - timeout_ms (int, default 45000)
-        - redirect_url (str, default localhost:1130 with request_token)
-        - default_exchange (str, default NSE)
-        - browser_args (list[str], passed to Chromium launch)
+        Optional environment variables:
+        - KITE_HEADLESS (bool, default False - shows browser window)
+        - KITE_TIMEOUT_MS (int, default 45000)
+        - KITE_REDIRECT_URL (str, default localhost:1130 with request_token)
         """
-        self.config = config
-        self.timeout_ms = int(config.get("timeout_ms", _DEFAULT_TIMEOUT_MS))
-        self.headless = bool(config.get("headless", True))
-        self.redirect_url = config.get("redirect_url", "http://localhost:1130/")
-        self.browser_args = config.get(
+        self.session: KiteSession | None = None
+        self.config = self._get_session_config()
+        self.timeout_ms = int(self.config.get("timeout_ms", _DEFAULT_TIMEOUT_MS))
+        self.headless = bool(self.config.get("headless", True))
+        self.redirect_url = self.config.get("redirect_url", "http://localhost:1130/")
+        self.browser_args = self.config.get(
             "browser_args", ["--disable-blink-features=AutomationControlled"]
         )
         # Access token artifact path
@@ -67,11 +66,94 @@ class KiteSessionManager:
         self.artifact_dir.mkdir(exist_ok=True)
         self.token_file = self.artifact_dir / "access_token.json"
 
-    def create_session(self) -> KiteSession:
+    @staticmethod
+    def _get_env_or_prompt(
+        name: str, prompt_text: str, secret: bool = False
+    ) -> str | None:
+        """Get configuration value from environment variable or user prompt.
+
+        Args:
+            name: Environment variable name.
+            prompt_text: Text to display in prompt.
+            secret: If True, hides input (for passwords/PINs).
+
+        Returns:
+            Configuration value from env or user input.
+        """
+        value = os.getenv(name)
+        if value:
+            return value
+
+        if secret:
+
+            return getpass(f"{prompt_text}: ")
+
+        return input(f"{prompt_text}: ").strip() or None
+
+    def _get_user_config(self) -> Dict[str, Any]:
+        """Compose session configuration from environment or user input.
+
+        Returns:
+            Dict containing all configuration needed for session creation.
+        """
+        LOGGER.info(
+            "Kite session env vars required for session creation: %s",
+            ", ".join(
+                [
+                    "KITE_USER_ID",
+                    "KITE_PASSWORD",
+                    "KITE_PIN"
+                ]
+            ),
+        )
+
+        return {
+            "user_id": self._get_env_or_prompt("KITE_USER_ID", "Kite user ID"),
+            "password": self._get_env_or_prompt(
+                "KITE_PASSWORD", "Kite password", secret=True
+            ),
+            "pin": self._get_env_or_prompt("KITE_PIN", "Kite PIN", secret=True),
+        }
+
+    def _get_session_config(self) -> Dict[str, Any]:
+        """Compose session configuration from environment or user input.
+
+        Returns:
+            Dict containing all configuration needed for session creation.
+        """
+        LOGGER.info(
+            "Kite session env vars required for session creation: %s",
+            ", ".join(
+                [
+                    "KITE_API_KEY",
+                    "KITE_API_SECRET",
+                    "KITE_HEADLESS",
+                    "KITE_TIMEOUT_MS",
+                    "KITE_REDIRECT_URL",
+                ]
+            ),
+        )
+
+        return {
+            "api_key": self._get_env_or_prompt("KITE_API_KEY", "Kite API key"),
+            "api_secret": self._get_env_or_prompt(
+                "KITE_API_SECRET", "Kite API secret", secret=True
+            ),
+            "headless": os.getenv("KITE_HEADLESS", "False").lower() == "true",
+            "timeout_ms": int(os.getenv("KITE_TIMEOUT_MS", "45000")),
+            "redirect_url": os.getenv(
+                "KITE_REDIRECT_URL",
+                "http://localhost:1130/",
+            ),
+        }
+
+    def start_session(self, cli=True) -> KiteSession:
         """Create and return an authenticated Kite session.
 
         Tries to use cached access token if available and valid.
         If expired or missing, runs full login flow and caches new token.
+
+        :param cli
 
         Returns:
             KiteSession: Authenticated session with access token and
@@ -81,6 +163,11 @@ class KiteSessionManager:
             ValueError: If required config is missing.
             RuntimeError: If login fails or request token extraction fails.
         """
+        if cli:
+            return self._cli_login()
+        return self._login()
+
+    def _cli_login(self):
         kite = self._build_kite_client()
 
         # Try to load and validate cached access token
@@ -91,29 +178,21 @@ class KiteSessionManager:
         cached_token_data = self._load_access_token()
         if cached_token_data:
             access_token = cached_token_data.get("access_token")
-            public_token = cached_token_data.get("public_token")
             if access_token and self._validate_access_token(kite, access_token):
                 print("✅ Cached access token is valid!")
                 kite.set_access_token(access_token)
                 print("=" * 60 + "\n")
-                return KiteSession(
+                self.session = KiteSession(
                     kite=kite,
-                    api_key=str(self.config["api_key"]),
-                    credentials={
-                        "user_id": str(self.config["user_id"]),
-                        "password": self.config.get("password", ""),
-                        "pin": self.config.get("pin", ""),
-                    },
-                    request_token="",
-                    access_token=str(access_token),
-                    public_token=str(public_token) if public_token else None,
-                    raw_session_data=cached_token_data,
+                    # session_cache=cached_token_data,
                 )
+                return self.session
             else:
                 print("❌ Cached access token expired or invalid")
 
         # Run full login flow if no valid cached token
         # Validate that password and pin are provided for full login
+        self.config = self.config | self._get_user_config()
         self._validate_config()
 
         print("\n" + "=" * 60)
@@ -133,60 +212,75 @@ class KiteSessionManager:
         # Save access token for future use
         self._save_access_token(session_data)
 
-        token_display = (
-            access_token[:20] + "..." if len(access_token) > 20 else access_token
-        )
         print("✅ Access token obtained successfully!")
-        print(f"Access Token: {token_display}")
         print("=" * 60 + "\n")
 
-        return KiteSession(
+        self.session = KiteSession(
             kite=kite,
-            api_key=str(self.config["api_key"]),
-            credentials={
-                "user_id": str(self.config["user_id"]),
-                "password": str(self.config["password"]),
-                "pin": str(self.config["pin"]),
-            },
-            request_token=request_token,
-            access_token=access_token,
-            public_token=(
-                str(session_data["public_token"])
-                if session_data.get("public_token") is not None
-                else None
-            ),
-            raw_session_data=dict(session_data),
+            # session_cache=dict(session_data),
         )
+        return self.session
 
-    def has_valid_cached_token(self) -> bool:
-        """Check if a valid cached access token exists without prompting for credentials.
+    def _login(self):
+        """Run login flow where user enters credentials manually in browser."""
+        self.headless = False
+        kite = self._build_kite_client()
 
-        Returns:
-            bool: True if cached token exists and is valid, False otherwise.
-        """
+        # Try to load and validate cached access token
         print("\n" + "=" * 60)
         print("🔍 Checking for cached access token...")
         print("=" * 60)
 
-        try:
-            kite = self._build_kite_client()
-            cached_token_data = self._load_access_token()
-            if cached_token_data:
-                access_token = cached_token_data.get("access_token")
-                if access_token and self._validate_access_token(kite, access_token):
-                    print("✅ Cached access token is valid!")
-                    print("=" * 60 + "\n")
-                    return True
-                else:
-                    print("❌ Cached access token expired or invalid")
-                    print("=" * 60 + "\n")
-            else:
+        cached_token_data = self._load_access_token()
+        if cached_token_data:
+            access_token = cached_token_data.get("access_token")
+            if access_token and self._validate_access_token(kite, access_token):
+                print("✅ Cached access token is valid!")
+                kite.set_access_token(access_token)
                 print("=" * 60 + "\n")
-            return False
-        except Exception as e:
-            print(f"Error checking cached token: {e}")
-            print("=" * 60 + "\n")
-            return False
+                self.session = KiteSession(
+                    kite=kite,
+                    # session_cache=cached_token_data,
+                )
+                return self.session
+            else:
+                print("❌ Cached access token expired or invalid")
+
+        self._validate_api_config()
+
+        print("\n" + "=" * 60)
+        print("🔐 Running manual browser login flow...")
+        print("=" * 60)
+
+        request_token = self._manual_login_and_get_request_token(kite.login_url())
+
+        print("\n" + "=" * 60)
+        print("🔑 Exchanging request token for access token...")
+        print("=" * 60)
+
+        session_data = self._get_access_token(kite, request_token)
+        access_token = str(session_data["access_token"])
+        kite.set_access_token(access_token)
+
+        # Save access token for future use
+        self._save_access_token(session_data)
+
+        print("✅ Access token obtained successfully!")
+        print("=" * 60 + "\n")
+
+        self.session = KiteSession(
+            kite=kite,
+            # session_cache=dict(session_data),
+        )
+        self.headless = self.config.get("headless", True)
+        return self.session
+
+    def _validate_api_config(self) -> None:
+        """Validate config required for token exchange and API client setup."""
+        required = ["api_key", "api_secret"]
+        missing = [name for name in required if not self.config.get(name)]
+        if missing:
+            raise ValueError(f"Missing required config keys: {', '.join(missing)}")
 
     def _validate_config(self) -> None:
         """Validate that all required config keys are present."""
@@ -215,6 +309,75 @@ class KiteSessionManager:
         if kite_class is None:
             raise RuntimeError("kiteconnect.KiteConnect is not available")
         return kite_class(api_key=str(self.config["api_key"]))
+
+    def _manual_login_and_get_request_token(self, kite_login_url: str) -> str:
+        """Open Kite login page and let user complete auth manually."""
+        if self.headless:
+            raise RuntimeError(
+                "Manual login requires a visible browser. Set KITE_HEADLESS=false."
+            )
+
+        playwright_sync = import_module("playwright.sync_api")
+        sync_playwright = getattr(playwright_sync, "sync_playwright")
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=self.headless, args=list(self.browser_args)
+            )
+            page = browser.new_page()
+            redirect_url = None
+
+            def on_response(response):
+                nonlocal redirect_url
+                if response.status in [301, 302, 303, 307, 308]:
+                    location = response.headers.get("location")
+                    if location and "request_token" in location:
+                        redirect_url = location
+
+            page.on("response", on_response)
+            try:
+                page.goto(
+                    kite_login_url,
+                    wait_until="networkidle",
+                    timeout=self.timeout_ms,
+                )
+                print(f"\n✓ Page loaded: {page.url}")
+                print("ℹ️  Complete login manually in the opened browser window.")
+                print("ℹ️  This includes user ID, password, and PIN/2FA.")
+
+                deadline = datetime.now().timestamp() + (self.timeout_ms / 1000)
+                while datetime.now().timestamp() < deadline:
+                    current_url = page.url
+                    if "request_token" in current_url:
+                        redirect_url = current_url
+                        break
+                    if redirect_url:
+                        break
+                    page.wait_for_timeout(500)
+
+                if not redirect_url:
+                    current_url = page.url
+                    if "request_token" in current_url:
+                        redirect_url = current_url
+
+                if not redirect_url:
+                    raise RuntimeError(
+                        "Timed out waiting for Kite request_token redirect. "
+                        "Complete login in the browser and ensure redirect URL "
+                        "is configured correctly."
+                    )
+
+                request_token = self._extract_request_token(redirect_url)
+                if not request_token:
+                    raise RuntimeError("Kite login redirect missing request_token")
+
+                print("=" * 60)
+                print("✅ Authentication Successful!")
+                print("=" * 60 + "\n")
+                return request_token
+            finally:
+                page.remove_listener("response", on_response)
+                browser.close()
 
     def _login_and_get_request_token(self, kite_login_url: str) -> str:
         """Automate Kite login with Playwright and return request token.
@@ -433,7 +596,6 @@ class KiteSessionManager:
             RuntimeError: If session generation fails.
         """
         try:
-            print(f"📝 Using request token: {request_token[:20]}...")
             session_data = kite.generate_session(
                 request_token=request_token,
                 api_secret=str(self.config["api_secret"]),
@@ -453,7 +615,6 @@ class KiteSessionManager:
         try:
             token_data = {
                 "access_token": session_data.get("access_token"),
-                "public_token": session_data.get("public_token"),
                 "timestamp": datetime.utcnow().isoformat(),
             }
             with open(self.token_file, "w") as f:
@@ -602,4 +763,5 @@ class KiteSessionManager:
             error_msg = (
                 f"Unable to find {button_name} button with selectors: {selectors}"
             )
+        raise RuntimeError(error_msg)
         raise RuntimeError(error_msg)

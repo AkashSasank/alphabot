@@ -8,12 +8,10 @@ dictionary payloads into ``Sequence`` instances.
 import copy
 from typing import Any, Dict, List
 
-from pydantic import BaseModel
 from tradingbot.core.candles import Candle, CandleBuilder
 from tradingbot.core.constants import Interval
 
 __all__ = [
-    "IndicatorPoint",
     "Interval",
     "Sequence",
     "SequenceBuilder",
@@ -51,6 +49,31 @@ class Sequence:
         """Replace the candle at a zero-based index with a new candle."""
         self.candles[position] = copy.deepcopy(candle)
 
+    def update_sequence(self, new_candles: List[Candle]) -> None:
+        """Update the sequence with new candles using existing methods.
+
+        - Every new candle (timestamp > latest existing) must be added via append_candle.
+        - The last candle in the sequence must be updated if a new candle has the same timestamp.
+        - All other existing candles are skipped from update.
+        """
+        if not new_candles:
+            return
+
+        if not self.candles:
+            self.candles = new_candles
+            return
+
+        last_ts = self.candles[-1].timestamp
+
+        for new_c in new_candles:
+            if new_c.timestamp == last_ts:
+                # Update the last candle
+                self.update_candle(len(self.candles) - 1, new_c)
+            elif new_c.timestamp > last_ts:
+                # Add new candle
+                self.add_candle(new_c)
+            # else: skip
+
     def get_candle(self, position: int) -> Candle:
         """Return the candle stored at the requested zero-based index."""
         return self.candles[position]
@@ -58,13 +81,6 @@ class Sequence:
     def __repr__(self) -> str:
         """Return a debug-friendly sequence representation."""
         return f"Sequence(candles={self.candles}, interval={self.interval})"
-
-
-class IndicatorPoint(BaseModel):
-    """Single indicator value aligned to one candle timestamp."""
-
-    timestamp: Any
-    value: float | None
 
 
 class SequenceBuilder:
@@ -78,12 +94,7 @@ class SequenceBuilder:
     def build_sequence(self, candles: List[Candle], interval: str) -> Sequence:
         """Build a deep-copied sequence from ``Candle`` objects."""
         sequence = copy.deepcopy(self.sequence)
-        sequence.candles = [
-            self.candle_builder.build_candle(
-                c.timestamp, c.open, c.high, c.low, c.close, c.volume
-            )
-            for c in candles
-        ]
+        sequence.candles = candles
         sequence.interval = interval
         return sequence
 
@@ -97,16 +108,9 @@ class SequenceBuilder:
         Expected keys per dictionary are timestamp/open/high/low/close/volume.
         """
         sequence = copy.deepcopy(self.sequence)
-        sequence.candles = [
-            self.candle_builder.build_candle(
-                c["timestamp"],
-                c["open"],
-                c["high"],
-                c["low"],
-                c["close"],
-                c["volume"],
-            )
-            for c in candles
-        ]
+        sequence.candles = [self.candle_builder.build_candle(**c) for c in candles]
         sequence.interval = interval
         return sequence
+
+
+sequence_builder = SequenceBuilder()

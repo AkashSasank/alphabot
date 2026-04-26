@@ -5,26 +5,43 @@ can map derived metrics back to source candles. The base implementation offers
 common utilities and a default full-series computation strategy.
 """
 
+from abc import ABC, abstractmethod
+from typing import Any
+
+from pydantic import BaseModel
 from tradingbot.core.candles import Candle
-from tradingbot.core.protocols import Indicator
-from tradingbot.core.sequence import IndicatorPoint, Sequence
+from tradingbot.core.sequence import Sequence
 
 
-class BaseIndicator:
+class IndicatorPoint(BaseModel):
+    """Single indicator value aligned to one candle timestamp."""
+
+    timestamp: Any
+    value: float | None
+
+
+class BaseIndicator(ABC):
     """Base class with shared utilities for indicator implementations."""
 
     name: str
     description: str
 
+    @abstractmethod
     def compute_point(self, candles: list[Candle]) -> IndicatorPoint:
         """Compute one point from an input candle window.
+            This method lets you compute the latest indicator point from a given candle window.
+            Can be used when we have to compute the realtime indicator value for the current forming candle.
 
         Subclasses must implement this method.
         """
         raise NotImplementedError
 
     def compute(self, sequence: Sequence) -> list[IndicatorPoint]:
-        """Compute a full series by evaluating each prefix candle window."""
+        """Compute a full series by evaluating each prefix candle window.
+        This method should be used when we have to recompute the entire indicator series for a sequence.
+        Increases time complexity if only the latest candle is updating.
+        Use compute point in that case and update the indicator series with the new point.
+        """
         points: list[IndicatorPoint] = []
 
         for index in range(len(sequence.candles)):
@@ -94,6 +111,44 @@ class ExponentialMovingAverage(BaseIndicator):
         self._require_candles(candles)
         closes = [candle.close for candle in candles]
         value = self._ema_full_series(closes, self.period)[-1]
+        return IndicatorPoint(timestamp=candles[-1].timestamp, value=value)
+
+
+class VolumeSimpleMovingAverage(BaseIndicator):
+    """Simple moving average over volume instead of closing price."""
+
+    def __init__(self, period: int) -> None:
+        if period <= 0:
+            raise ValueError("period must be greater than 0")
+        self.period = period
+        self.name = f"VMA{period}"
+        self.description = f"Volume Moving Average over {period} periods"
+
+    def compute_point(self, candles: list[Candle]) -> IndicatorPoint:
+        """Return latest volume SMA point for the given candle window."""
+        self._require_candles(candles)
+        volume_values = [candle.volume for candle in candles]
+        value = None
+        if len(volume_values) >= self.period:
+            value = sum(volume_values[-self.period :]) / self.period
+        return IndicatorPoint(timestamp=candles[-1].timestamp, value=value)
+
+
+class VolumeExponentialMovingAverage(BaseIndicator):
+    """Exponential moving average over volume instead of closing price."""
+
+    def __init__(self, period: int) -> None:
+        if period <= 0:
+            raise ValueError("period must be greater than 0")
+        self.period = period
+        self.name = f"VEMA{period}"
+        self.description = f"Volume Exponential Moving Average over {period} periods"
+
+    def compute_point(self, candles: list[Candle]) -> IndicatorPoint:
+        """Return latest volume EMA point for the given candle window."""
+        self._require_candles(candles)
+        volume_values = [candle.volume for candle in candles]
+        value = self._ema_full_series(volume_values, self.period)[-1]
         return IndicatorPoint(timestamp=candles[-1].timestamp, value=value)
 
 
@@ -187,6 +242,37 @@ class MovingAverageConvergenceDivergence(BaseIndicator):
         closes = [candle.close for candle in candles]
         fast_ema = self._ema_full_series(closes, self.fast_period)[-1]
         slow_ema = self._ema_full_series(closes, self.slow_period)[-1]
+
+        value = None
+        if fast_ema is not None and slow_ema is not None:
+            value = fast_ema - slow_ema
+
+        return IndicatorPoint(timestamp=candles[-1].timestamp, value=value)
+
+
+class VolumeMovingAverageConvergenceDivergence(BaseIndicator):
+    """Volume MACD line computed from fast and slow volume EMAs."""
+
+    def __init__(
+        self,
+        fast_period: int = 12,
+        slow_period: int = 26,
+    ) -> None:
+        if fast_period <= 0 or slow_period <= 0:
+            raise ValueError("fast_period and slow_period must be greater than 0")
+        if fast_period >= slow_period:
+            raise ValueError("fast_period must be less than slow_period")
+        self.fast_period = fast_period
+        self.slow_period = slow_period
+        self.name = f"VMACD({fast_period},{slow_period})"
+        self.description = "Volume MACD line using fast and slow volume EMAs"
+
+    def compute_point(self, candles: list[Candle]) -> IndicatorPoint:
+        """Return latest volume MACD point from fast and slow EMA differentials."""
+        self._require_candles(candles)
+        volumes = [candle.volume for candle in candles]
+        fast_ema = self._ema_full_series(volumes, self.fast_period)[-1]
+        slow_ema = self._ema_full_series(volumes, self.slow_period)[-1]
 
         value = None
         if fast_ema is not None and slow_ema is not None:
@@ -328,7 +414,7 @@ class FastStochasticOscillator(StochasticOscillator):
     pass
 
 
-def build_popular_indicators() -> list[Indicator]:
+def build_popular_indicators() -> list[BaseIndicator]:
     """Return a commonly used default indicator bundle for quick setup."""
     return [
         SimpleMovingAverage(period=20),
