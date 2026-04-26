@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "tradingbot"
+name = "algotrade"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
@@ -20,5 +20,14 @@ dependencies = [
 
 [project.scripts]
 tradingbot-init = "tradingbot.cli:init_command"
-tradingbot-extract-features = "tradingbot.feature_extractor:extract_features_command"
 
+[tool.hatch.build.targets.wheel]
+packages = ["src/tradingbot", "src/market_agent"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/tradingbot",
+    "src/market_agent",
+    "README.md",
+    "pyproject.toml",
+]

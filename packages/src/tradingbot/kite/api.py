@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any, Dict
 
-from tradingbot.core.candles import Candle
 from tradingbot.core.constants import Interval
 from tradingbot.core.protocols import CandleAPIProvider
 from tradingbot.kite.session import KiteSession
