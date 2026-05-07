@@ -77,6 +77,37 @@ class Interval:
         DAY: 60 * 24,
     }
 
+    @classmethod
+    def all(cls) -> tuple[str, ...]:
+        """Return all supported interval identifiers."""
+        return tuple(cls.MINUTES_PER_CANDLE.keys())
+
+    @classmethod
+    def normalize(cls, interval: str) -> str:
+        """Normalize common interval aliases to supported identifiers."""
+        normalized = interval.strip().lower()
+        aliases = {
+            "1m": cls.MINUTE,
+            "1min": cls.MINUTE,
+            "1minute": cls.MINUTE,
+            "3m": cls.THREE_MINUTE,
+            "3min": cls.THREE_MINUTE,
+            "5m": cls.FIVE_MINUTE,
+            "5min": cls.FIVE_MINUTE,
+            "10m": cls.TEN_MINUTE,
+            "10min": cls.TEN_MINUTE,
+            "15m": cls.FIFTEEN_MINUTE,
+            "15min": cls.FIFTEEN_MINUTE,
+            "30m": cls.THIRTY_MINUTE,
+            "30min": cls.THIRTY_MINUTE,
+            "60m": cls.SIXTY_MINUTE,
+            "60min": cls.SIXTY_MINUTE,
+            "1h": cls.SIXTY_MINUTE,
+            "day": cls.DAY,
+            "1d": cls.DAY,
+        }
+        return aliases.get(normalized, normalized)
+
 
 class UpdateOperation(StrEnum):
     """Supported sequence mutation operations used by ticker updates."""

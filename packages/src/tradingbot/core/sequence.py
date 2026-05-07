@@ -8,7 +8,7 @@ dictionary payloads into ``Sequence`` instances.
 import copy
 from typing import Any, Dict, List
 
-from tradingbot.core.candles import Candle, CandleBuilder
+from tradingbot.core.candles import Candle, candle_builder
 from tradingbot.core.constants import Interval
 
 __all__ = [
@@ -88,7 +88,7 @@ class SequenceBuilder:
 
     def __init__(self):
         """Initialize builders for constructing candle sequences."""
-        self.candle_builder = CandleBuilder()
+        self.candle_builder = candle_builder
         self.sequence: Sequence = Sequence([], Interval.MINUTE)
 
     def build_sequence(self, candles: List[Candle], interval: str) -> Sequence:

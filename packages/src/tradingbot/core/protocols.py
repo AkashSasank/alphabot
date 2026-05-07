@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from tradingbot.core.candles import Candle
 
 if TYPE_CHECKING:
+    from tradingbot.core.indicators import IndicatorCursor
     from tradingbot.core.sequence import Sequence
 
 
@@ -40,3 +41,5 @@ class Indicator(Protocol):
     def compute_point(self, candles: list[Candle]) -> IndicatorPoint: ...
 
     def compute(self, sequence: "Sequence") -> list[IndicatorPoint]: ...
+
+    def cursor(self, sequence: "Sequence") -> "IndicatorCursor": ...

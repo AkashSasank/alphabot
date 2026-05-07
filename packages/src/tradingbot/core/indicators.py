@@ -6,6 +6,7 @@ common utilities and a default full-series computation strategy.
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from typing import Any
 
 from pydantic import BaseModel
@@ -18,6 +19,85 @@ class IndicatorPoint(BaseModel):
 
     timestamp: Any
     value: float | None
+
+
+class IndicatorCursor(Iterator[IndicatorPoint]):
+    """Stateful cursor that consumes a shared sequence and stores points by timestamp."""
+
+    def __init__(self, indicator: "BaseIndicator", sequence: Sequence) -> None:
+        self.indicator = indicator
+        self.sequence = sequence
+        self._points: dict[Any, IndicatorPoint] = {}
+
+    def __iter__(self) -> "IndicatorCursor":
+        return self
+
+    def __next__(self) -> IndicatorPoint:
+        """Compute the next point, refreshing the latest point when caught up."""
+        if not self.sequence.candles:
+            raise StopIteration
+
+        point = self._compute_next_unseen()
+        if point is not None:
+            return point
+
+        return self._refresh_latest()
+
+    @property
+    def points(self) -> dict[Any, IndicatorPoint]:
+        """Return timestamp-indexed points after syncing with the sequence."""
+        self.sync()
+        return self._points
+
+    @property
+    def latest(self) -> IndicatorPoint | None:
+        """Return the most recently stored indicator point."""
+        points = self.points
+        if not points:
+            return None
+        return next(reversed(points.values()))
+
+    @property
+    def values(self) -> list[IndicatorPoint]:
+        """Return stored points as an insertion-ordered list."""
+        return list(self.points.values())
+
+    def sync(self) -> dict[Any, IndicatorPoint]:
+        """Consume unseen candles and refresh the latest candle point."""
+        if not self.sequence.candles:
+            return self._points
+
+        while self._compute_next_unseen() is not None:
+            pass
+
+        self._refresh_latest()
+        return self._points
+
+    def recompute(self) -> dict[Any, IndicatorPoint]:
+        """Rebuild all stored points from the current external sequence."""
+        self._points = {
+            point.timestamp: point
+            for point in self.indicator.compute(self.sequence)
+        }
+        return self._points
+
+    def _compute_next_unseen(self) -> IndicatorPoint | None:
+        """Compute the next sequence point whose timestamp is not stored."""
+        for index, candle in enumerate(self.sequence.candles):
+            if candle.timestamp in self._points:
+                continue
+
+            point = self.indicator.compute_point(self.sequence.candles[: index + 1])
+            self._points[point.timestamp] = point
+            return point
+
+        return None
+
+    def _refresh_latest(self) -> IndicatorPoint:
+        """Recompute and upsert the latest point from the full sequence."""
+        point = self.indicator.compute_point(self.sequence.candles)
+        self._points[point.timestamp] = point
+        return point
 
 
 class BaseIndicator(ABC):
@@ -48,6 +128,10 @@ class BaseIndicator(ABC):
             points.append(self.compute_point(sequence.candles[: index + 1]))
 
         return points
+
+    def cursor(self, sequence: Sequence) -> IndicatorCursor:
+        """Return a stateful cursor over a shared external candle sequence."""
+        return IndicatorCursor(self, sequence)
 
     @staticmethod
     def _require_candles(candles: list[Candle]) -> None:
