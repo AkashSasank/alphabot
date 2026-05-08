@@ -1,13 +1,16 @@
-"""Ticker orchestration for API-seeded and websocket-updated candle sequences."""
-
 import sys
 import time
 from pathlib import Path
 
+from tradingbot.kite.time import candle_bucket
+
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "packages" / "src"))
 
 from tradingbot.core.constants import Interval
 from tradingbot.kite import (
     KiteCandleAPIProvider,
+    KiteSessionManager,
     KiteWebSocketClient,
 )
 from tradingbot.kite.session import KiteSession
@@ -15,6 +18,12 @@ from tradingbot.core.sequence import Sequence, sequence_builder
 from tradingbot.core.candles import Candle, candle_builder
 from tradingbot.core.indicators import BaseIndicator, IndicatorCursor
 from tradingbot.core.ticker import TickerData
+
+SYMBOL = "SBIN"
+INTERVAL = Interval.MINUTE
+INITIAL_CANDLES = 60
+
+
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
@@ -54,13 +63,12 @@ class Ticker:
         self.indicators[name] = indicator
         self.indicator_cursors[name] = indicator.cursor(self.sequence)
         return self
-
+    
     def initilaize_sequence(self):
         candles_data = self.candle_api_provider.fetch_candles(
             symbol=self.symbol,
             interval=self.timeframe,
-            from_date=datetime.now(IST)
-            - self.timeframe_delta(self.timeframe) * INITIAL_CANDLES,
+            from_date=datetime.now(IST)- self.timeframe_delta(self.timeframe) * INITIAL_CANDLES,
         )
         candles = [candle_builder.build_candle(**data) for data in candles_data]
         self.sequence.update_sequence(candles)
