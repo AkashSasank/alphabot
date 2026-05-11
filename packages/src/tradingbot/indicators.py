@@ -1,6 +1,7 @@
 from tradingbot.core.indicators import (
     AverageTrueRange,
     BollingerBandWidth,
+    CandleView,
     ExponentialMovingAverage,
     IndicatorCursor,
     MovingAverageConvergenceDivergence,
@@ -8,6 +9,7 @@ from tradingbot.core.indicators import (
     RelativeStrengthIndex,
     SimpleMovingAverage,
     StochasticOscillator,
+    StochasticRSI,
     VolumeExponentialMovingAverage,
     VolumeMovingAverageConvergenceDivergence,
     VolumeSimpleMovingAverage,
@@ -16,6 +18,7 @@ from tradingbot.core.indicators import (
 
 __all__ = [
     "SimpleMovingAverage",
+    "CandleView",
     "ExponentialMovingAverage",
     "VolumeSimpleMovingAverage",
     "VolumeExponentialMovingAverage",
@@ -26,6 +29,7 @@ __all__ = [
     "BollingerBandWidth",
     "AverageTrueRange",
     "StochasticOscillator",
+    "StochasticRSI",
     "OnBalanceVolume",
     "IndicatorCursor",
 ]

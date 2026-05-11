@@ -41,6 +41,14 @@ class Ticker:
         self.symbol = symbol
         self.timeframe = timeframe
         self.candle_api_provider = KiteCandleAPIProvider(session=session)
+        self.sequence = sequence_builder.build_sequence(
+            candles=[],
+            interval=self.timeframe,
+        )
+        self.indicators: dict[str, BaseIndicator] = {}
+        self.indicator_cursors: dict[str, IndicatorCursor] = {}
+        self._last_cumulative_volume_by_token = {}
+        self.initilaize_sequence()
         self.websocket_client = KiteWebSocketClient(
             session=session,
             on_ticks=self.on_ticks,
@@ -50,14 +58,6 @@ class Ticker:
             mode=KiteWebSocketClient.MODE_FULL,
         )
         self.websocket_client.connect(symbols=[self.symbol], threaded=True)
-        self.sequence = sequence_builder.build_sequence(
-            candles=[],
-            interval=self.timeframe,
-        )
-        self.initilaize_sequence()
-        self.indicators: dict[str, BaseIndicator] = {}
-        self.indicator_cursors: dict[str, IndicatorCursor] = {}
-        self._last_cumulative_volume_by_token = {}
 
     def add_indicator(self, name: str, indicator: BaseIndicator) -> Ticker:
         self.indicators[name] = indicator

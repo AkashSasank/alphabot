@@ -6,12 +6,29 @@ common utilities and a default full-series computation strategy.
 """
 
 from abc import ABC, abstractmethod
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping, Sequence as SequenceABC
+from dataclasses import dataclass
 from typing import Any
 
 from pydantic import BaseModel
 from tradingbot.core.candles import Candle
-from tradingbot.core.sequence import Sequence
+from tradingbot.core.sequence import Sequence as CandleSequence
+
+
+@dataclass(frozen=True)
+class CandleView:
+    """Lightweight OHLCV view used for raw candle dictionaries."""
+
+    timestamp: Any
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+
+
+CandleLike = Candle | CandleView | Mapping[str, Any]
+CandleInput = CandleSequence | SequenceABC[CandleLike]
 
 
 class IndicatorPoint(BaseModel):
@@ -24,7 +41,7 @@ class IndicatorPoint(BaseModel):
 class IndicatorCursor(Iterator[IndicatorPoint]):
     """Stateful cursor that consumes a shared sequence and stores points by timestamp."""
 
-    def __init__(self, indicator: "BaseIndicator", sequence: Sequence) -> None:
+    def __init__(self, indicator: "BaseIndicator", sequence: CandleSequence) -> None:
         self.indicator = indicator
         self.sequence = sequence
         self._points: dict[Any, IndicatorPoint] = {}
@@ -107,7 +124,7 @@ class BaseIndicator(ABC):
     description: str
 
     @abstractmethod
-    def compute_point(self, candles: list[Candle]) -> IndicatorPoint:
+    def compute_point(self, candles: CandleInput) -> IndicatorPoint:
         """Compute one point from an input candle window.
             This method lets you compute the latest indicator point from a given candle window.
             Can be used when we have to compute the realtime indicator value for the current forming candle.
@@ -116,28 +133,59 @@ class BaseIndicator(ABC):
         """
         raise NotImplementedError
 
-    def compute(self, sequence: Sequence) -> list[IndicatorPoint]:
+    def compute(self, candles: CandleInput) -> list[IndicatorPoint]:
         """Compute a full series by evaluating each prefix candle window.
         This method should be used when we have to recompute the entire indicator series for a sequence.
         Increases time complexity if only the latest candle is updating.
         Use compute point in that case and update the indicator series with the new point.
         """
+        candle_window = self._candle_window(candles)
         points: list[IndicatorPoint] = []
 
-        for index in range(len(sequence.candles)):
-            points.append(self.compute_point(sequence.candles[: index + 1]))
+        for index in range(len(candle_window)):
+            points.append(self.compute_point(candle_window[: index + 1]))
 
         return points
 
-    def cursor(self, sequence: Sequence) -> IndicatorCursor:
+    def cursor(self, sequence: CandleSequence) -> IndicatorCursor:
         """Return a stateful cursor over a shared external candle sequence."""
         return IndicatorCursor(self, sequence)
 
     @staticmethod
-    def _require_candles(candles: list[Candle]) -> None:
+    def _require_candles(candles: SequenceABC[Candle | CandleView]) -> None:
         """Ensure indicator computations are not executed with empty input."""
         if not candles:
             raise ValueError("candles must not be empty")
+
+    @classmethod
+    def _candle_window(cls, candles: CandleInput) -> list[Candle | CandleView]:
+        """Return attribute-accessible candles without building full Candle models."""
+        if isinstance(candles, CandleSequence):
+            source = candles.candles
+        else:
+            source = candles
+
+        return [cls._candle_view(candle) for candle in source]
+
+    @staticmethod
+    def _candle_view(candle: CandleLike) -> Candle | CandleView:
+        """Return a candle object exposing timestamp/open/high/low/close/volume."""
+        if isinstance(candle, (Candle, CandleView)):
+            return candle
+
+        required_keys = ("timestamp", "open", "high", "low", "close", "volume")
+        missing_keys = [key for key in required_keys if key not in candle]
+        if missing_keys:
+            raise KeyError(f"candle is missing required keys: {missing_keys}")
+
+        return CandleView(
+            timestamp=candle["timestamp"],
+            open=float(candle["open"]),
+            high=float(candle["high"]),
+            low=float(candle["low"]),
+            close=float(candle["close"]),
+            volume=float(candle["volume"]),
+        )
 
     @staticmethod
     def _ema_full_series(
@@ -170,8 +218,9 @@ class SimpleMovingAverage(BaseIndicator):
         self.name = f"MA{period}"
         self.description = f"Simple Moving Average over {period} periods"
 
-    def compute_point(self, candles: list[Candle]) -> IndicatorPoint:
+    def compute_point(self, candles: CandleInput) -> IndicatorPoint:
         """Return latest SMA point for the given candle window."""
+        candles = self._candle_window(candles)
         self._require_candles(candles)
         value = None
         closes = [candle.close for candle in candles]
@@ -190,8 +239,9 @@ class ExponentialMovingAverage(BaseIndicator):
         self.name = f"EMA{period}"
         self.description = f"Exponential Moving Average over {period} periods"
 
-    def compute_point(self, candles: list[Candle]) -> IndicatorPoint:
+    def compute_point(self, candles: CandleInput) -> IndicatorPoint:
         """Return latest EMA point for the given candle window."""
+        candles = self._candle_window(candles)
         self._require_candles(candles)
         closes = [candle.close for candle in candles]
         value = self._ema_full_series(closes, self.period)[-1]
@@ -208,8 +258,9 @@ class VolumeSimpleMovingAverage(BaseIndicator):
         self.name = f"VMA{period}"
         self.description = f"Volume Moving Average over {period} periods"
 
-    def compute_point(self, candles: list[Candle]) -> IndicatorPoint:
+    def compute_point(self, candles: CandleInput) -> IndicatorPoint:
         """Return latest volume SMA point for the given candle window."""
+        candles = self._candle_window(candles)
         self._require_candles(candles)
         volume_values = [candle.volume for candle in candles]
         value = None
@@ -228,8 +279,9 @@ class VolumeExponentialMovingAverage(BaseIndicator):
         self.name = f"VEMA{period}"
         self.description = f"Volume Exponential Moving Average over {period} periods"
 
-    def compute_point(self, candles: list[Candle]) -> IndicatorPoint:
+    def compute_point(self, candles: CandleInput) -> IndicatorPoint:
         """Return latest volume EMA point for the given candle window."""
+        candles = self._candle_window(candles)
         self._require_candles(candles)
         volume_values = [candle.volume for candle in candles]
         value = self._ema_full_series(volume_values, self.period)[-1]
@@ -247,8 +299,9 @@ class VolumeWeightedAveragePrice(BaseIndicator):
         self.name = "VWAP" if period is None else f"VWAP{period}"
         self.description = f"Volume Weighted Average Price over {period_text}"
 
-    def compute_point(self, candles: list[Candle]) -> IndicatorPoint:
+    def compute_point(self, candles: CandleInput) -> IndicatorPoint:
         """Return latest VWAP point using configured volume-weighted window."""
+        candles = self._candle_window(candles)
         self._require_candles(candles)
         window = candles
         if self.period is not None:
@@ -275,15 +328,17 @@ class VolumeWeightedAveragePrice(BaseIndicator):
 class RelativeStrengthIndex(BaseIndicator):
     """Relative Strength Index (RSI) momentum oscillator."""
 
-    def __init__(self, period: int = 14) -> None:
+    def __init__(self, period: int = 14, normalize: bool = False) -> None:
         if period <= 0:
             raise ValueError("period must be greater than 0")
         self.period = period
+        self.normalize = normalize
         self.name = f"RSI{period}"
         self.description = f"Relative Strength Index over {period} periods"
 
-    def compute_point(self, candles: list[Candle]) -> IndicatorPoint:
+    def compute_point(self, candles: CandleInput) -> IndicatorPoint:
         """Return latest RSI point based on average gains and losses."""
+        candles = self._candle_window(candles)
         self._require_candles(candles)
         closes = [candle.close for candle in candles]
         value = None
@@ -304,7 +359,14 @@ class RelativeStrengthIndex(BaseIndicator):
                 rs = avg_gain / avg_loss
                 value = 100 - (100 / (1 + rs))
 
+        value = self._normalize_oscillator_value(value)
         return IndicatorPoint(timestamp=candles[-1].timestamp, value=value)
+
+    def _normalize_oscillator_value(self, value: float | None) -> float | None:
+        """Normalize a 0-100 oscillator around its midpoint to -1..1."""
+        if value is None or not self.normalize:
+            return value
+        return (value - 50) / 50
 
 
 class MovingAverageConvergenceDivergence(BaseIndicator):
@@ -320,8 +382,9 @@ class MovingAverageConvergenceDivergence(BaseIndicator):
         self.name = f"MACD({fast_period},{slow_period})"
         self.description = "MACD line using fast EMA minus slow EMA"
 
-    def compute_point(self, candles: list[Candle]) -> IndicatorPoint:
+    def compute_point(self, candles: CandleInput) -> IndicatorPoint:
         """Return latest MACD point from fast and slow EMA differentials."""
+        candles = self._candle_window(candles)
         self._require_candles(candles)
         closes = [candle.close for candle in candles]
         fast_ema = self._ema_full_series(closes, self.fast_period)[-1]
@@ -351,8 +414,9 @@ class VolumeMovingAverageConvergenceDivergence(BaseIndicator):
         self.name = f"VMACD({fast_period},{slow_period})"
         self.description = "Volume MACD line using fast and slow volume EMAs"
 
-    def compute_point(self, candles: list[Candle]) -> IndicatorPoint:
+    def compute_point(self, candles: CandleInput) -> IndicatorPoint:
         """Return latest volume MACD point from fast and slow EMA differentials."""
+        candles = self._candle_window(candles)
         self._require_candles(candles)
         volumes = [candle.volume for candle in candles]
         fast_ema = self._ema_full_series(volumes, self.fast_period)[-1]
@@ -378,8 +442,9 @@ class BollingerBandWidth(BaseIndicator):
         self.name = f"BBW({period},{std_multiplier})"
         self.description = "Bollinger Band Width as volatility expansion indicator"
 
-    def compute_point(self, candles: list[Candle]) -> IndicatorPoint:
+    def compute_point(self, candles: CandleInput) -> IndicatorPoint:
         """Return latest BBW point normalized by moving-average midpoint."""
+        candles = self._candle_window(candles)
         self._require_candles(candles)
         closes = [candle.close for candle in candles]
         value = None
@@ -407,8 +472,9 @@ class AverageTrueRange(BaseIndicator):
         self.name = f"ATR{period}"
         self.description = f"Average True Range over {period} periods"
 
-    def compute_point(self, candles: list[Candle]) -> IndicatorPoint:
+    def compute_point(self, candles: CandleInput) -> IndicatorPoint:
         """Return latest ATR point from trailing true-range values."""
+        candles = self._candle_window(candles)
         self._require_candles(candles)
         value = None
 
@@ -419,7 +485,7 @@ class AverageTrueRange(BaseIndicator):
         return IndicatorPoint(timestamp=candles[-1].timestamp, value=value)
 
     @staticmethod
-    def _true_ranges(candles: list[Candle]) -> list[float]:
+    def _true_ranges(candles: SequenceABC[Candle | CandleView]) -> list[float]:
         """Compute true range values between consecutive candles."""
         true_ranges: list[float] = []
 
@@ -440,15 +506,17 @@ class AverageTrueRange(BaseIndicator):
 class StochasticOscillator(BaseIndicator):
     """Fast stochastic %K oscillator over a fixed lookback window."""
 
-    def __init__(self, period: int = 14) -> None:
+    def __init__(self, period: int = 14, normalize: bool = False) -> None:
         if period <= 0:
             raise ValueError("period must be greater than 0")
         self.period = period
+        self.normalize = normalize
         self.name = f"STOCH{period}"
         self.description = f"Stochastic oscillator %K over {period} periods"
 
-    def compute_point(self, candles: list[Candle]) -> IndicatorPoint:
+    def compute_point(self, candles: CandleInput) -> IndicatorPoint:
         """Return latest stochastic %K point for the configured period."""
+        candles = self._candle_window(candles)
         self._require_candles(candles)
         value = None
 
@@ -460,7 +528,86 @@ class StochasticOscillator(BaseIndicator):
             if denominator != 0:
                 value = ((candles[-1].close - lowest_low) / denominator) * 100
 
+        value = self._normalize_oscillator_value(value)
         return IndicatorPoint(timestamp=candles[-1].timestamp, value=value)
+
+    def _normalize_oscillator_value(self, value: float | None) -> float | None:
+        """Normalize a 0-100 oscillator around its midpoint to -1..1."""
+        if value is None or not self.normalize:
+            return value
+        return (value - 50) / 50
+
+
+class StochasticRSI(BaseIndicator):
+    """Stochastic RSI oscillator computed from an RSI series."""
+
+    def __init__(
+        self,
+        rsi_period: int = 14,
+        stoch_period: int = 14,
+        normalize: bool = False,
+    ) -> None:
+        if rsi_period <= 0:
+            raise ValueError("rsi_period must be greater than 0")
+        if stoch_period <= 0:
+            raise ValueError("stoch_period must be greater than 0")
+        self.rsi_period = rsi_period
+        self.stoch_period = stoch_period
+        self.normalize = normalize
+        self.name = f"STOCHRSI({rsi_period},{stoch_period})"
+        self.description = (
+            "Stochastic RSI oscillator over RSI "
+            f"{rsi_period} and stochastic {stoch_period} periods"
+        )
+
+    def compute_point(self, candles: CandleInput) -> IndicatorPoint:
+        """Return latest stochastic RSI point."""
+        candles = self._candle_window(candles)
+        self._require_candles(candles)
+        rsi_values = self._rsi_series(candles)
+        value = None
+
+        if len(rsi_values) >= self.stoch_period:
+            window = rsi_values[-self.stoch_period :]
+            lowest_rsi = min(window)
+            highest_rsi = max(window)
+            denominator = highest_rsi - lowest_rsi
+            if denominator != 0:
+                value = ((rsi_values[-1] - lowest_rsi) / denominator) * 100
+
+        value = self._normalize_oscillator_value(value)
+        return IndicatorPoint(timestamp=candles[-1].timestamp, value=value)
+
+    def _rsi_series(self, candles: CandleInput) -> list[float]:
+        """Compute RSI values for each candle with enough lookback."""
+        candles = self._candle_window(candles)
+        closes = [candle.close for candle in candles]
+        rsi_values: list[float] = []
+
+        for end_index in range(self.rsi_period, len(closes)):
+            window = closes[end_index - self.rsi_period : end_index + 1]
+            deltas = [
+                window[index] - window[index - 1]
+                for index in range(1, len(window))
+            ]
+            gains = [max(delta, 0.0) for delta in deltas]
+            losses = [max(-delta, 0.0) for delta in deltas]
+            avg_gain = sum(gains) / self.rsi_period
+            avg_loss = sum(losses) / self.rsi_period
+
+            if avg_loss == 0:
+                rsi_values.append(100.0)
+            else:
+                rs = avg_gain / avg_loss
+                rsi_values.append(100 - (100 / (1 + rs)))
+
+        return rsi_values
+
+    def _normalize_oscillator_value(self, value: float | None) -> float | None:
+        """Normalize a 0-100 oscillator around its midpoint to -1..1."""
+        if value is None or not self.normalize:
+            return value
+        return (value - 50) / 50
 
 
 class OnBalanceVolume(BaseIndicator):
@@ -470,8 +617,9 @@ class OnBalanceVolume(BaseIndicator):
         self.name = "OBV"
         self.description = "On Balance Volume cumulative momentum indicator"
 
-    def compute_point(self, candles: list[Candle]) -> IndicatorPoint:
+    def compute_point(self, candles: CandleInput) -> IndicatorPoint:
         """Return latest OBV point from cumulative signed-volume changes."""
+        candles = self._candle_window(candles)
         self._require_candles(candles)
         value = None
 
@@ -483,7 +631,10 @@ class OnBalanceVolume(BaseIndicator):
         return IndicatorPoint(timestamp=candles[-1].timestamp, value=value)
 
     @staticmethod
-    def _obv_delta(previous_candle: Candle, current_candle: Candle) -> float:
+    def _obv_delta(
+        previous_candle: Candle | CandleView,
+        current_candle: Candle | CandleView,
+    ) -> float:
         """Return signed volume contribution between two adjacent candles."""
         if current_candle.close > previous_candle.close:
             return current_candle.volume
@@ -514,5 +665,6 @@ def build_popular_indicators() -> list[BaseIndicator]:
         BollingerBandWidth(period=20, std_multiplier=2.0),
         AverageTrueRange(period=14),
         StochasticOscillator(period=14),
+        StochasticRSI(rsi_period=14, stoch_period=14),
         OnBalanceVolume(),
     ]

@@ -6,7 +6,6 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Protocol
 
 from pydantic import BaseModel
-from tradingbot.core.candles import Candle
 
 if TYPE_CHECKING:
     from tradingbot.core.indicators import IndicatorCursor
@@ -38,8 +37,8 @@ class Indicator(Protocol):
     name: str
     description: str
 
-    def compute_point(self, candles: list[Candle]) -> IndicatorPoint: ...
+    def compute_point(self, candles: Any) -> IndicatorPoint: ...
 
-    def compute(self, sequence: "Sequence") -> list[IndicatorPoint]: ...
+    def compute(self, candles: Any) -> list[IndicatorPoint]: ...
 
     def cursor(self, sequence: "Sequence") -> "IndicatorCursor": ...

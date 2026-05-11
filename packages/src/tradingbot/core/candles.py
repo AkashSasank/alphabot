@@ -50,11 +50,13 @@ class CandleProperties(BaseModel):
     body_size: float = 0.0
     upper_wick_size: float = 0.0
     lower_wick_size: float = 0.0
-    total_wick_size: float = 0.0
-    range_size: float = 0.0
-    upper_to_lower_wick_ratio: float | None = None
-    wick_to_body_ratio: float | None = None
-    body_to_range_ratio: float | None = None
+    candle_size: float = 0.0
+    upper_wick_to_candle_ratio: float | None = None
+    lower_wick_to_candle_ratio: float | None = None
+    upper_wick_to_body_ratio: float | None = None
+    lower_wick_to_body_ratio: float | None = None
+    wick_difference_to_candle_ratio: float | None = None
+    body_to_candle_ratio: float | None = None
 
 
 class Candle(BaseModel):
@@ -106,14 +108,14 @@ class Candle(BaseModel):
     def _infer_type(self) -> CandleType:
         """Classify candle pattern from body and wick proportions."""
         body = self.properties.body_size
-        total_range = self.properties.range_size
+        candle_size = self.properties.candle_size
         upper_shadow = self.properties.upper_wick_size
         lower_shadow = self.properties.lower_wick_size
 
-        if total_range == 0 or body <= total_range * 0.1:
+        if candle_size == 0 or body <= candle_size * 0.1:
             return CandleType.DOJI
 
-        if body >= total_range * 0.9:
+        if body >= candle_size * 0.9:
             return CandleType.MARUBOZU
 
         if lower_shadow >= body * 2 and upper_shadow <= body:
@@ -122,7 +124,7 @@ class Candle(BaseModel):
         if upper_shadow >= body * 2 and lower_shadow <= body:
             return CandleType.INVERTED_HAMMER
 
-        if body <= total_range * 0.3:
+        if body <= candle_size * 0.3:
             return CandleType.SPINNING_TOP
 
         return CandleType.STANDARD
@@ -130,7 +132,7 @@ class Candle(BaseModel):
     def _precalculate_structure_metrics(self) -> None:
         """Compute reusable candle geometry metrics and ratios."""
         self.properties.body_size = abs(self.close - self.open)
-        self.properties.range_size = max(self.high - self.low, 0.0)
+        self.properties.candle_size = max(self.high - self.low, 0.0)
         self.properties.upper_wick_size = max(
             self.high - max(self.open, self.close),
             0.0,
@@ -139,20 +141,29 @@ class Candle(BaseModel):
             min(self.open, self.close) - self.low,
             0.0,
         )
-        self.properties.total_wick_size = (
-            self.properties.upper_wick_size + self.properties.lower_wick_size
-        )
-        self.properties.upper_to_lower_wick_ratio = self._safe_ratio(
+        self.properties.upper_wick_to_candle_ratio = self._safe_ratio(
             self.properties.upper_wick_size,
+            self.properties.candle_size,
+        )
+        self.properties.lower_wick_to_candle_ratio = self._safe_ratio(
             self.properties.lower_wick_size,
+            self.properties.candle_size,
         )
-        self.properties.wick_to_body_ratio = self._safe_ratio(
-            self.properties.total_wick_size,
+        self.properties.upper_wick_to_body_ratio = self._safe_ratio(
+            self.properties.upper_wick_size,
             self.properties.body_size,
         )
-        self.properties.body_to_range_ratio = self._safe_ratio(
+        self.properties.lower_wick_to_body_ratio = self._safe_ratio(
+            self.properties.lower_wick_size,
             self.properties.body_size,
-            self.properties.range_size,
+        )
+        self.properties.wick_difference_to_candle_ratio = self._safe_ratio(
+            self.properties.upper_wick_size - self.properties.lower_wick_size,
+            self.properties.candle_size,
+        )
+        self.properties.body_to_candle_ratio = self._safe_ratio(
+            self.properties.body_size,
+            self.properties.candle_size,
         )
 
     @staticmethod
@@ -183,11 +194,19 @@ class Candle(BaseModel):
             "body_size": self.properties.body_size,
             "upper_wick_size": self.properties.upper_wick_size,
             "lower_wick_size": self.properties.lower_wick_size,
-            "total_wick_size": self.properties.total_wick_size,
-            "range_size": self.properties.range_size,
-            "upper_to_lower_wick_ratio": self.properties.upper_to_lower_wick_ratio,
-            "wick_to_body_ratio": self.properties.wick_to_body_ratio,
-            "body_to_range_ratio": self.properties.body_to_range_ratio,
+            "candle_size": self.properties.candle_size,
+            "upper_wick_to_candle_ratio": (
+                self.properties.upper_wick_to_candle_ratio
+            ),
+            "lower_wick_to_candle_ratio": (
+                self.properties.lower_wick_to_candle_ratio
+            ),
+            "upper_wick_to_body_ratio": self.properties.upper_wick_to_body_ratio,
+            "lower_wick_to_body_ratio": self.properties.lower_wick_to_body_ratio,
+            "wick_difference_to_candle_ratio": (
+                self.properties.wick_difference_to_candle_ratio
+            ),
+            "body_to_candle_ratio": self.properties.body_to_candle_ratio,
         }
         return flattened
 
