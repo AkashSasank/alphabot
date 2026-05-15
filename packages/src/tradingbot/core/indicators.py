@@ -8,6 +8,7 @@ common utilities and a default full-series computation strategy.
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Mapping, Sequence as SequenceABC
 from dataclasses import dataclass
+from math import log
 from typing import Any
 
 from pydantic import BaseModel
@@ -248,6 +249,64 @@ class ExponentialMovingAverage(BaseIndicator):
         return IndicatorPoint(timestamp=candles[-1].timestamp, value=value)
 
 
+class ExponentialMovingAverageSlope(BaseIndicator):
+    """Slope of an EMA over a trailing comparison window."""
+
+    def __init__(
+        self,
+        period: int = 9,
+        slope_period: int = 3,
+        normalize: bool = True,
+    ) -> None:
+        if period <= 0:
+            raise ValueError("period must be greater than 0")
+        if slope_period <= 0:
+            raise ValueError("slope_period must be greater than 0")
+        self.period = period
+        self.slope_period = slope_period
+        self.normalize = normalize
+        self.name = f"EMASLOPE({period},{slope_period})"
+        self.description = (
+            f"EMA slope over {slope_period} periods using EMA{period}"
+        )
+
+    def compute_point(self, candles: CandleInput) -> IndicatorPoint:
+        """Return latest EMA slope point."""
+        candles = self._candle_window(candles)
+        self._require_candles(candles)
+        return self._points_from_candles(candles)[-1]
+
+    def compute(self, candles: CandleInput) -> list[IndicatorPoint]:
+        """Return full EMA slope series."""
+        candles = self._candle_window(candles)
+        self._require_candles(candles)
+        return self._points_from_candles(candles)
+
+    def _points_from_candles(
+        self,
+        candles: SequenceABC[Candle | CandleView],
+    ) -> list[IndicatorPoint]:
+        closes = [candle.close for candle in candles]
+        ema_values = self._ema_full_series(closes, self.period)
+        points: list[IndicatorPoint] = []
+
+        for index, candle in enumerate(candles):
+            value = None
+            previous_index = index - self.slope_period
+            if previous_index >= 0:
+                current = ema_values[index]
+                previous = ema_values[previous_index]
+                if current is not None and previous is not None:
+                    value = (current - previous) / self.slope_period
+                    if self.normalize:
+                        denominator = abs(previous)
+                        value = None if denominator == 0 else value / denominator
+
+            points.append(IndicatorPoint(timestamp=candle.timestamp, value=value))
+
+        return points
+
+
 class VolumeSimpleMovingAverage(BaseIndicator):
     """Simple moving average over volume instead of closing price."""
 
@@ -325,6 +384,62 @@ class VolumeWeightedAveragePrice(BaseIndicator):
         return IndicatorPoint(timestamp=candles[-1].timestamp, value=value)
 
 
+class VolumeWeightedAveragePriceDistance(BaseIndicator):
+    """Distance of close price from VWAP over full history or a fixed window."""
+
+    def __init__(self, period: int | None = None, normalize: bool = True) -> None:
+        if period is not None and period <= 0:
+            raise ValueError("period must be greater than 0 when provided")
+        self.period = period
+        self.normalize = normalize
+        period_text = "all candles" if period is None else f"last {period} candles"
+        self.name = "VWAPDIST" if period is None else f"VWAPDIST{period}"
+        self.description = f"Close price distance from VWAP over {period_text}"
+
+    def compute_point(self, candles: CandleInput) -> IndicatorPoint:
+        """Return latest close-to-VWAP distance."""
+        candles = self._candle_window(candles)
+        self._require_candles(candles)
+        return self._points_from_candles(candles)[-1]
+
+    def compute(self, candles: CandleInput) -> list[IndicatorPoint]:
+        """Return full close-to-VWAP distance series."""
+        candles = self._candle_window(candles)
+        self._require_candles(candles)
+        return self._points_from_candles(candles)
+
+    def _points_from_candles(
+        self,
+        candles: SequenceABC[Candle | CandleView],
+    ) -> list[IndicatorPoint]:
+        points: list[IndicatorPoint] = []
+
+        for index, candle in enumerate(candles):
+            value = None
+            start = 0
+            if self.period is not None:
+                if index + 1 < self.period:
+                    points.append(IndicatorPoint(timestamp=candle.timestamp, value=None))
+                    continue
+                start = index - self.period + 1
+
+            window = candles[start : index + 1]
+            total_volume = sum(item.volume for item in window)
+            if total_volume != 0:
+                weighted_price_sum = sum(
+                    ((item.high + item.low + item.close) / 3) * item.volume
+                    for item in window
+                )
+                vwap = weighted_price_sum / total_volume
+                value = candle.close - vwap
+                if self.normalize:
+                    value = None if vwap == 0 else value / vwap
+
+            points.append(IndicatorPoint(timestamp=candle.timestamp, value=value))
+
+        return points
+
+
 class RelativeStrengthIndex(BaseIndicator):
     """Relative Strength Index (RSI) momentum oscillator."""
 
@@ -362,6 +477,40 @@ class RelativeStrengthIndex(BaseIndicator):
         value = self._normalize_oscillator_value(value)
         return IndicatorPoint(timestamp=candles[-1].timestamp, value=value)
 
+    def compute(self, candles: CandleInput) -> list[IndicatorPoint]:
+        """Return full RSI series with one pass over aligned candle windows."""
+        candles = self._candle_window(candles)
+        self._require_candles(candles)
+        closes = [candle.close for candle in candles]
+        points: list[IndicatorPoint] = []
+
+        for end_index, candle in enumerate(candles):
+            value = None
+            if end_index >= self.period:
+                deltas = [
+                    closes[index] - closes[index - 1]
+                    for index in range(end_index - self.period + 1, end_index + 1)
+                ]
+                gains = [max(delta, 0.0) for delta in deltas]
+                losses = [max(-delta, 0.0) for delta in deltas]
+                avg_gain = sum(gains) / self.period
+                avg_loss = sum(losses) / self.period
+
+                if avg_loss == 0:
+                    value = 100.0
+                else:
+                    rs = avg_gain / avg_loss
+                    value = 100 - (100 / (1 + rs))
+
+            points.append(
+                IndicatorPoint(
+                    timestamp=candle.timestamp,
+                    value=self._normalize_oscillator_value(value),
+                )
+            )
+
+        return points
+
     def _normalize_oscillator_value(self, value: float | None) -> float | None:
         """Normalize a 0-100 oscillator around its midpoint to -1..1."""
         if value is None or not self.normalize:
@@ -395,6 +544,95 @@ class MovingAverageConvergenceDivergence(BaseIndicator):
             value = fast_ema - slow_ema
 
         return IndicatorPoint(timestamp=candles[-1].timestamp, value=value)
+
+    def compute(self, candles: CandleInput) -> list[IndicatorPoint]:
+        """Return full MACD line series from aligned fast and slow EMAs."""
+        candles = self._candle_window(candles)
+        self._require_candles(candles)
+        closes = [candle.close for candle in candles]
+        fast_ema = self._ema_full_series(closes, self.fast_period)
+        slow_ema = self._ema_full_series(closes, self.slow_period)
+        points: list[IndicatorPoint] = []
+
+        for candle, fast_value, slow_value in zip(candles, fast_ema, slow_ema):
+            value = None
+            if fast_value is not None and slow_value is not None:
+                value = fast_value - slow_value
+            points.append(IndicatorPoint(timestamp=candle.timestamp, value=value))
+
+        return points
+
+
+class MACDHistogram(BaseIndicator):
+    """MACD histogram computed as MACD line minus signal EMA."""
+
+    def __init__(
+        self,
+        fast_period: int = 12,
+        slow_period: int = 26,
+        signal_period: int = 9,
+        normalize: bool = False,
+    ) -> None:
+        if fast_period <= 0 or slow_period <= 0 or signal_period <= 0:
+            raise ValueError("periods must be greater than 0")
+        if fast_period >= slow_period:
+            raise ValueError("fast_period must be less than slow_period")
+        self.fast_period = fast_period
+        self.slow_period = slow_period
+        self.signal_period = signal_period
+        self.normalize = normalize
+        self.name = f"MACDHIST({fast_period},{slow_period},{signal_period})"
+        self.description = "MACD histogram using MACD line minus signal EMA"
+
+    def compute_point(self, candles: CandleInput) -> IndicatorPoint:
+        """Return latest MACD histogram point."""
+        candles = self._candle_window(candles)
+        self._require_candles(candles)
+        return self._points_from_candles(candles)[-1]
+
+    def compute(self, candles: CandleInput) -> list[IndicatorPoint]:
+        """Return full MACD histogram series."""
+        candles = self._candle_window(candles)
+        self._require_candles(candles)
+        return self._points_from_candles(candles)
+
+    def _points_from_candles(
+        self,
+        candles: SequenceABC[Candle | CandleView],
+    ) -> list[IndicatorPoint]:
+        closes = [candle.close for candle in candles]
+        fast_ema = self._ema_full_series(closes, self.fast_period)
+        slow_ema = self._ema_full_series(closes, self.slow_period)
+        macd_values: list[float | None] = []
+        valid_macd_values: list[float] = []
+        valid_macd_indices: list[int] = []
+
+        for index, (fast_value, slow_value) in enumerate(zip(fast_ema, slow_ema)):
+            value = None
+            if fast_value is not None and slow_value is not None:
+                value = fast_value - slow_value
+                valid_macd_values.append(value)
+                valid_macd_indices.append(index)
+            macd_values.append(value)
+
+        signal_values = self._ema_full_series(valid_macd_values, self.signal_period)
+        signal_by_index: list[float | None] = [None] * len(candles)
+        for signal_value, candle_index in zip(signal_values, valid_macd_indices):
+            signal_by_index[candle_index] = signal_value
+
+        points: list[IndicatorPoint] = []
+        for index, candle in enumerate(candles):
+            value = None
+            macd_value = macd_values[index]
+            signal_value = signal_by_index[index]
+            if macd_value is not None and signal_value is not None:
+                value = macd_value - signal_value
+                if self.normalize:
+                    value = None if candle.close == 0 else value / candle.close
+
+            points.append(IndicatorPoint(timestamp=candle.timestamp, value=value))
+
+        return points
 
 
 class VolumeMovingAverageConvergenceDivergence(BaseIndicator):
@@ -503,6 +741,185 @@ class AverageTrueRange(BaseIndicator):
         return true_ranges
 
 
+class AverageDirectionalIndex(BaseIndicator):
+    """Average Directional Index (ADX) trend-strength indicator."""
+
+    def __init__(self, period: int = 14, normalize: bool = False) -> None:
+        if period <= 0:
+            raise ValueError("period must be greater than 0")
+        self.period = period
+        self.normalize = normalize
+        self.name = f"ADX{period}"
+        self.description = f"Average Directional Index over {period} periods"
+
+    def compute_point(self, candles: CandleInput) -> IndicatorPoint:
+        """Return latest ADX point."""
+        candles = self._candle_window(candles)
+        self._require_candles(candles)
+        return self._points_from_candles(candles)[-1]
+
+    def compute(self, candles: CandleInput) -> list[IndicatorPoint]:
+        """Return full ADX series."""
+        candles = self._candle_window(candles)
+        self._require_candles(candles)
+        return self._points_from_candles(candles)
+
+    def _points_from_candles(
+        self,
+        candles: SequenceABC[Candle | CandleView],
+    ) -> list[IndicatorPoint]:
+        plus_dm, minus_dm, true_ranges = self._directional_components(candles)
+        dx_by_component_index: list[float | None] = [None] * len(true_ranges)
+        adx_by_candle_index: list[float | None] = [None] * len(candles)
+        points: list[IndicatorPoint] = []
+
+        if len(true_ranges) >= self.period:
+            smoothed_tr = sum(true_ranges[: self.period])
+            smoothed_plus_dm = sum(plus_dm[: self.period])
+            smoothed_minus_dm = sum(minus_dm[: self.period])
+
+            for component_index in range(self.period - 1, len(true_ranges)):
+                if component_index > self.period - 1:
+                    smoothed_tr = (
+                        smoothed_tr
+                        - (smoothed_tr / self.period)
+                        + true_ranges[component_index]
+                    )
+                    smoothed_plus_dm = (
+                        smoothed_plus_dm
+                        - (smoothed_plus_dm / self.period)
+                        + plus_dm[component_index]
+                    )
+                    smoothed_minus_dm = (
+                        smoothed_minus_dm
+                        - (smoothed_minus_dm / self.period)
+                        + minus_dm[component_index]
+                    )
+
+                if smoothed_tr == 0:
+                    continue
+
+                plus_di = 100 * smoothed_plus_dm / smoothed_tr
+                minus_di = 100 * smoothed_minus_dm / smoothed_tr
+                denominator = plus_di + minus_di
+                if denominator != 0:
+                    dx_by_component_index[component_index] = (
+                        100 * abs(plus_di - minus_di) / denominator
+                    )
+
+        dx_window: list[float] = []
+        previous_adx = None
+        for component_index, dx in enumerate(dx_by_component_index):
+            if dx is None:
+                continue
+
+            candle_index = component_index + 1
+            if previous_adx is None:
+                dx_window.append(dx)
+                if len(dx_window) < self.period:
+                    continue
+                previous_adx = sum(dx_window[-self.period :]) / self.period
+            else:
+                previous_adx = ((previous_adx * (self.period - 1)) + dx) / self.period
+
+            value = previous_adx
+            if self.normalize:
+                value = value / 100
+            adx_by_candle_index[candle_index] = value
+
+        for candle_index, candle in enumerate(candles):
+            value = adx_by_candle_index[candle_index]
+
+            points.append(IndicatorPoint(timestamp=candle.timestamp, value=value))
+
+        return points
+
+    @staticmethod
+    def _directional_components(
+        candles: SequenceABC[Candle | CandleView],
+    ) -> tuple[list[float], list[float], list[float]]:
+        plus_dm: list[float] = []
+        minus_dm: list[float] = []
+        true_ranges: list[float] = []
+
+        for index in range(1, len(candles)):
+            current = candles[index]
+            previous = candles[index - 1]
+            up_move = current.high - previous.high
+            down_move = previous.low - current.low
+
+            plus_dm.append(up_move if up_move > down_move and up_move > 0 else 0.0)
+            minus_dm.append(
+                down_move if down_move > up_move and down_move > 0 else 0.0
+            )
+            true_ranges.append(
+                max(
+                    current.high - current.low,
+                    abs(current.high - previous.close),
+                    abs(current.low - previous.close),
+                )
+            )
+
+        return plus_dm, minus_dm, true_ranges
+
+
+class RollingVolatility(BaseIndicator):
+    """Rolling volatility of log returns."""
+
+    def __init__(self, period: int = 20, annualize_factor: float | None = None) -> None:
+        if period <= 0:
+            raise ValueError("period must be greater than 0")
+        if annualize_factor is not None and annualize_factor <= 0:
+            raise ValueError("annualize_factor must be greater than 0 when provided")
+        self.period = period
+        self.annualize_factor = annualize_factor
+        self.name = f"RVOL{period}"
+        self.description = f"Rolling log-return volatility over {period} periods"
+
+    def compute_point(self, candles: CandleInput) -> IndicatorPoint:
+        """Return latest rolling volatility point."""
+        candles = self._candle_window(candles)
+        self._require_candles(candles)
+        return self._points_from_candles(candles)[-1]
+
+    def compute(self, candles: CandleInput) -> list[IndicatorPoint]:
+        """Return full rolling volatility series."""
+        candles = self._candle_window(candles)
+        self._require_candles(candles)
+        return self._points_from_candles(candles)
+
+    def _points_from_candles(
+        self,
+        candles: SequenceABC[Candle | CandleView],
+    ) -> list[IndicatorPoint]:
+        log_returns: list[float | None] = []
+        points: list[IndicatorPoint] = []
+
+        for index in range(1, len(candles)):
+            previous_close = candles[index - 1].close
+            current_close = candles[index].close
+            if previous_close <= 0 or current_close <= 0:
+                log_returns.append(None)
+            else:
+                log_returns.append(log(current_close / previous_close))
+
+        for candle_index, candle in enumerate(candles):
+            value = None
+            if candle_index >= self.period:
+                window = log_returns[candle_index - self.period : candle_index]
+                if all(item is not None for item in window):
+                    returns = [item for item in window if item is not None]
+                    mean = sum(returns) / self.period
+                    variance = sum((item - mean) ** 2 for item in returns) / self.period
+                    value = variance**0.5
+                    if self.annualize_factor is not None:
+                        value *= self.annualize_factor**0.5
+
+            points.append(IndicatorPoint(timestamp=candle.timestamp, value=value))
+
+        return points
+
+
 class StochasticOscillator(BaseIndicator):
     """Fast stochastic %K oscillator over a fixed lookback window."""
 
@@ -578,6 +995,37 @@ class StochasticRSI(BaseIndicator):
         value = self._normalize_oscillator_value(value)
         return IndicatorPoint(timestamp=candles[-1].timestamp, value=value)
 
+    def compute(self, candles: CandleInput) -> list[IndicatorPoint]:
+        """Return full stochastic RSI series with aligned timestamps."""
+        candles = self._candle_window(candles)
+        self._require_candles(candles)
+        closes = [candle.close for candle in candles]
+        rsi_values: list[float] = []
+        points: list[IndicatorPoint] = []
+
+        for end_index, candle in enumerate(candles):
+            if end_index >= self.rsi_period:
+                window = closes[end_index - self.rsi_period : end_index + 1]
+                rsi_values.append(self._rsi_value(window))
+
+            value = None
+            if len(rsi_values) >= self.stoch_period:
+                window = rsi_values[-self.stoch_period :]
+                lowest_rsi = min(window)
+                highest_rsi = max(window)
+                denominator = highest_rsi - lowest_rsi
+                if denominator != 0:
+                    value = ((rsi_values[-1] - lowest_rsi) / denominator) * 100
+
+            points.append(
+                IndicatorPoint(
+                    timestamp=candle.timestamp,
+                    value=self._normalize_oscillator_value(value),
+                )
+            )
+
+        return points
+
     def _rsi_series(self, candles: CandleInput) -> list[float]:
         """Compute RSI values for each candle with enough lookback."""
         candles = self._candle_window(candles)
@@ -586,22 +1034,26 @@ class StochasticRSI(BaseIndicator):
 
         for end_index in range(self.rsi_period, len(closes)):
             window = closes[end_index - self.rsi_period : end_index + 1]
-            deltas = [
-                window[index] - window[index - 1]
-                for index in range(1, len(window))
-            ]
-            gains = [max(delta, 0.0) for delta in deltas]
-            losses = [max(-delta, 0.0) for delta in deltas]
-            avg_gain = sum(gains) / self.rsi_period
-            avg_loss = sum(losses) / self.rsi_period
-
-            if avg_loss == 0:
-                rsi_values.append(100.0)
-            else:
-                rs = avg_gain / avg_loss
-                rsi_values.append(100 - (100 / (1 + rs)))
+            rsi_values.append(self._rsi_value(window))
 
         return rsi_values
+
+    def _rsi_value(self, closes: list[float]) -> float:
+        """Return RSI for a close-price window of ``rsi_period + 1`` values."""
+        deltas = [
+            closes[index] - closes[index - 1]
+            for index in range(1, len(closes))
+        ]
+        gains = [max(delta, 0.0) for delta in deltas]
+        losses = [max(-delta, 0.0) for delta in deltas]
+        avg_gain = sum(gains) / self.rsi_period
+        avg_loss = sum(losses) / self.rsi_period
+
+        if avg_loss == 0:
+            return 100.0
+
+        rs = avg_gain / avg_loss
+        return 100 - (100 / (1 + rs))
 
     def _normalize_oscillator_value(self, value: float | None) -> float | None:
         """Normalize a 0-100 oscillator around its midpoint to -1..1."""
@@ -656,14 +1108,23 @@ def build_popular_indicators() -> list[BaseIndicator]:
         SimpleMovingAverage(period=50),
         ExponentialMovingAverage(period=9),
         ExponentialMovingAverage(period=21),
+        ExponentialMovingAverageSlope(period=9, slope_period=3),
         VolumeWeightedAveragePrice(),
+        VolumeWeightedAveragePriceDistance(period=20),
         RelativeStrengthIndex(period=14),
         MovingAverageConvergenceDivergence(
             fast_period=12,
             slow_period=26,
         ),
+        MACDHistogram(
+            fast_period=12,
+            slow_period=26,
+            signal_period=9,
+        ),
         BollingerBandWidth(period=20, std_multiplier=2.0),
         AverageTrueRange(period=14),
+        AverageDirectionalIndex(period=14),
+        RollingVolatility(period=20),
         StochasticOscillator(period=14),
         StochasticRSI(rsi_period=14, stoch_period=14),
         OnBalanceVolume(),

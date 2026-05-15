@@ -8,11 +8,17 @@ from enum import Enum, StrEnum
 
 
 class CandleColor(str, Enum):
-    """Directional candle color based on open/close relation."""
+    """Binary candle pressure color inferred from wick structure."""
 
     GREEN = "green"
     RED = "red"
-    NEUTRAL = "neutral"
+
+    def one_hot_encode(self) -> dict[str, int]:
+        """Return a one-hot encoding dictionary for the candle color."""
+        return {
+            f"candle_color_{color.value}": int(color == self)
+            for color in CandleColor
+        }
 
 
 class CandleType(str, Enum):
@@ -52,6 +58,12 @@ class CandleType(str, Enum):
             ),
         }
         return descriptions[self]
+
+    def one_hot_encode(self) -> dict[str, int]:
+        """Return a one-hot encoding dictionary for the candle type."""
+        return {
+            f"candle_type_{ctype.value}": int(ctype == self) for ctype in CandleType
+        }
 
 
 class Interval:

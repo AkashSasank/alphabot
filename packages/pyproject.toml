@@ -15,6 +15,7 @@ dependencies = [
     "plotly>=5.24.0",
     "playwright>=1.53.0",
     "pydantic>=2.12.5",
+    "torch>=2.0.0",
     "python-dotenv>=1.0.0",
     "langgraph>=1.1.9",
     "langchain>=1.2.15",

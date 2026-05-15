@@ -46,7 +46,7 @@ class CandleProperties(BaseModel):
     """Derived candle metrics used for pattern classification and analysis."""
 
     candle_type: CandleType = CandleType.STANDARD
-    candle_color: CandleColor = CandleColor.NEUTRAL
+    candle_color: CandleColor = CandleColor.RED
     body_size: float = 0.0
     upper_wick_size: float = 0.0
     lower_wick_size: float = 0.0
@@ -96,14 +96,11 @@ class Candle(BaseModel):
         return self.properties.candle_type.description
 
     def _infer_color(self) -> CandleColor:
-        """Infer candle direction from open and close values."""
-        if self.close > self.open:
+        """Infer buyer/seller pressure from wick structure."""
+        if self.properties.lower_wick_size > self.properties.upper_wick_size:
             return CandleColor.GREEN
 
-        if self.close < self.open:
-            return CandleColor.RED
-
-        return CandleColor.NEUTRAL
+        return CandleColor.RED
 
     def _infer_type(self) -> CandleType:
         """Classify candle pattern from body and wick proportions."""
@@ -141,11 +138,11 @@ class Candle(BaseModel):
             min(self.open, self.close) - self.low,
             0.0,
         )
-        self.properties.upper_wick_to_candle_ratio = self._safe_ratio(
+        self.properties.upper_wick_to_candle_ratio = self._centered_safe_ratio(
             self.properties.upper_wick_size,
             self.properties.candle_size,
         )
-        self.properties.lower_wick_to_candle_ratio = self._safe_ratio(
+        self.properties.lower_wick_to_candle_ratio = self._centered_safe_ratio(
             self.properties.lower_wick_size,
             self.properties.candle_size,
         )
@@ -161,7 +158,7 @@ class Candle(BaseModel):
             self.properties.upper_wick_size - self.properties.lower_wick_size,
             self.properties.candle_size,
         )
-        self.properties.body_to_candle_ratio = self._safe_ratio(
+        self.properties.body_to_candle_ratio = self._centered_safe_ratio(
             self.properties.body_size,
             self.properties.candle_size,
         )
@@ -176,6 +173,15 @@ class Candle(BaseModel):
             return None
 
         return numerator / denominator
+
+    @classmethod
+    def _centered_safe_ratio(cls, numerator: float, denominator: float) -> float | None:
+        """Return a candle ratio centered around zero by subtracting 0.5."""
+        ratio = cls._safe_ratio(numerator, denominator)
+        if ratio is None:
+            return None
+
+        return ratio - 0.5
 
     def to_dict(self) -> dict[str, Any]:
         """Return a flattened dictionary representation of the candle.

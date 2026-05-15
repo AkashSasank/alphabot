@@ -26,13 +26,17 @@ class IndicatorUnitRegistry:
 
     NAME_TO_UNIT: Dict[str, IndicatorUnit] = {
         "MA": IndicatorUnit.PRICE,
+        "EMASLOPE": IndicatorUnit.PERCENT,
         "EMA": IndicatorUnit.PRICE,
+        "VWAPDIST": IndicatorUnit.PERCENT,
         "VWAP": IndicatorUnit.PRICE,
         "RSI": IndicatorUnit.OSCILLATOR,
         "STOCH": IndicatorUnit.OSCILLATOR,
         "MACD": IndicatorUnit.VOLATILITY,
+        "ADX": IndicatorUnit.OSCILLATOR,
         "BBW": IndicatorUnit.PERCENT,
         "ATR": IndicatorUnit.VOLATILITY,
+        "RVOL": IndicatorUnit.VOLATILITY,
         "OBV": IndicatorUnit.VOLUME,
     }
 
