@@ -213,12 +213,21 @@ def _indicator_test_candles():
 def test_indicator_bundle_adds_normalized_output_columns():
     builder = CandleFeatureBuilder(["timestamp", "indicators"])
 
-    assert builder.output_columns == ["timestamp", "rsi", "stochastic_rsi", "macd"]
+    assert builder.output_columns == [
+        "timestamp",
+        "rsi",
+        "stochastic_rsi",
+        "macd",
+        "atr",
+        "adx",
+    ]
     assert builder.feature_map == {
         "timestamp": 0,
         "rsi": 1,
         "stochastic_rsi": 2,
         "macd": 3,
+        "atr": 4,
+        "adx": 5,
     }
 
 
@@ -230,11 +239,13 @@ def test_dataframe_indicator_features_are_normalized():
         stochastic_rsi_stoch_period=3,
         macd_fast_period=3,
         macd_slow_period=5,
+        atr_period=3,
+        adx_period=3,
     )
 
     encoded = builder.encode_dataframe(pd.DataFrame(_indicator_test_candles()))
 
-    assert encoded.columns.tolist() == ["rsi", "stochastic_rsi", "macd"]
+    assert encoded.columns.tolist() == ["rsi", "stochastic_rsi", "macd", "atr", "adx"]
     for column in encoded.columns:
         assert encoded[column].between(-1, 1).all()
     assert encoded.iloc[-1].notna().all()
@@ -249,6 +260,8 @@ def test_iterative_indicator_features_match_dataframe_after_warmup():
         stochastic_rsi_stoch_period=3,
         macd_fast_period=3,
         macd_slow_period=5,
+        atr_period=3,
+        adx_period=3,
     )
     dataframe_builder = CandleFeatureBuilder(
         ["indicators"],
@@ -257,6 +270,8 @@ def test_iterative_indicator_features_match_dataframe_after_warmup():
         stochastic_rsi_stoch_period=3,
         macd_fast_period=3,
         macd_slow_period=5,
+        atr_period=3,
+        adx_period=3,
     )
 
     iterative_last = [iterative_builder.encode(candle) for candle in candles][-1]
@@ -264,5 +279,30 @@ def test_iterative_indicator_features_match_dataframe_after_warmup():
         -1
     ].to_dict()
 
-    for column in ["rsi", "stochastic_rsi", "macd"]:
+    for column in ["rsi", "stochastic_rsi", "macd", "atr", "adx"]:
         assert round(iterative_last[column], 10) == round(dataframe_last[column], 10)
+
+
+def test_indicator_alias_adds_full_indicator_bundle():
+    builder = CandleFeatureBuilder(["indicator"])
+
+    assert builder.output_columns == ["rsi", "stochastic_rsi", "macd", "atr", "adx"]
+
+
+def test_empty_dataframe_indicator_features_return_schema_without_computing():
+    builder = CandleFeatureBuilder(["timestamp", "indicators"])
+    empty = pd.DataFrame(
+        columns=["timestamp", "open", "high", "low", "close", "volume"]
+    )
+
+    encoded = builder.encode_dataframe(empty)
+
+    assert encoded.empty
+    assert encoded.columns.tolist() == [
+        "timestamp",
+        "rsi",
+        "stochastic_rsi",
+        "macd",
+        "atr",
+        "adx",
+    ]

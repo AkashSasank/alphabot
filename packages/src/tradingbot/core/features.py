@@ -7,8 +7,11 @@ from typing import Any
 from tradingbot.core.candles import candle_builder
 from tradingbot.core.constants import CandleColor, CandleType
 from tradingbot.core.indicators import (
+    AverageDirectionalIndex,
+    AverageTrueRange,
     MovingAverageConvergenceDivergence,
     RelativeStrengthIndex,
+    StochasticOscillator,
     StochasticRSI,
 )
 
@@ -16,11 +19,16 @@ from tradingbot.core.indicators import (
 class CandleFeatureBuilder:
     CANDLE_COLOR_FEATURES = frozenset({"candle_color", "candle_color_code"})
     INDICATOR_FEATURES = frozenset(
-        {"indicators", "technical_indicators", "technical indicators"}
+        {"indicator", "indicators", "technical_indicators", "technical indicators"}
     )
     LOG_VOLUME_ZSCORE_FEATURE = "log_volume_zscore"
+    ADX_FEATURES = frozenset({"adx"})
+    ATR_FEATURES = frozenset({"atr"})
     MACD_FEATURES = frozenset({"macd"})
     RSI_FEATURES = frozenset({"rsi"})
+    STOCHASTIC_FEATURES = frozenset(
+        {"stochastic", "stoch", "stochastic_oscillator", "stochastic oscillator"}
+    )
     STOCHASTIC_RSI_FEATURES = frozenset(
         {"stochastic_rsi", "stochastic rsi", "stoch_rsi", "stoch rsi", "stochrsi"}
     )
@@ -40,35 +48,80 @@ class CandleFeatureBuilder:
         log_volume_window: int = 5,
         log_volume_zscore_clip: float = 3.0,
         rsi_period: int = 14,
+        rsi_periods: Iterable[int] | None = None,
+        stochastic_period: int = 14,
+        stochastic_periods: Iterable[int] | None = None,
         stochastic_rsi_period: int = 14,
         stochastic_rsi_stoch_period: int = 14,
+        stochastic_rsi_periods: Iterable[int] | None = None,
         macd_fast_period: int = 12,
         macd_slow_period: int = 26,
         macd_close_ratio_clip: float = 0.05,
+        atr_period: int = 14,
+        atr_close_ratio_clip: float = 0.05,
+        adx_period: int = 14,
     ):
         self.feature_names = list(feature_names)
         self.log_volume_window = log_volume_window
         self.log_volume_zscore_clip = log_volume_zscore_clip
         self.rsi_period = rsi_period
+        self.rsi_periods = self._normalize_periods(rsi_periods, default=(7, 14))
+        self.stochastic_period = stochastic_period
+        self.stochastic_periods = self._normalize_periods(
+            stochastic_periods,
+            default=(7, 14),
+        )
         self.stochastic_rsi_period = stochastic_rsi_period
         self.stochastic_rsi_stoch_period = stochastic_rsi_stoch_period
+        self.stochastic_rsi_periods = self._normalize_periods(
+            stochastic_rsi_periods,
+            default=(7, 14),
+        )
         self.macd_fast_period = macd_fast_period
         self.macd_slow_period = macd_slow_period
         self.macd_close_ratio_clip = macd_close_ratio_clip
+        self.atr_period = atr_period
+        self.atr_close_ratio_clip = atr_close_ratio_clip
+        self.adx_period = adx_period
         self._log_volume_window = deque(maxlen=log_volume_window)
         self._indicator_candles: list[dict[str, Any]] = []
         self._rsi_indicator = RelativeStrengthIndex(
             period=rsi_period,
             normalize=True,
         )
+        self._bundle_rsi_indicators = {
+            period: RelativeStrengthIndex(period=period, normalize=True)
+            for period in self.rsi_periods
+        }
+        self._stochastic_indicator = StochasticOscillator(
+            period=stochastic_period,
+            normalize=True,
+        )
+        self._bundle_stochastic_indicators = {
+            period: StochasticOscillator(period=period, normalize=True)
+            for period in self.stochastic_periods
+        }
         self._stochastic_rsi_indicator = StochasticRSI(
             rsi_period=stochastic_rsi_period,
             stoch_period=stochastic_rsi_stoch_period,
             normalize=True,
         )
+        self._bundle_stochastic_rsi_indicators = {
+            period: StochasticRSI(
+                rsi_period=period,
+                stoch_period=period,
+                normalize=True,
+            )
+            for period in self.stochastic_rsi_periods
+        }
         self._macd_indicator = MovingAverageConvergenceDivergence(
             fast_period=macd_fast_period,
             slow_period=macd_slow_period,
+        )
+        self._atr_indicator = AverageTrueRange(period=atr_period)
+        self._adx_indicator = AverageDirectionalIndex(
+            period=adx_period,
+            normalize=True,
         )
         self.output_columns = self._determine_output_columns()
         self.feature_map = {
@@ -125,10 +178,16 @@ class CandleFeatureBuilder:
                 features.update(self._encode_indicator_bundle(close))
             elif feature_name in self.RSI_FEATURES:
                 features["rsi"] = self._latest_rsi()
+            elif feature_name in self.STOCHASTIC_FEATURES:
+                features["stochastic"] = self._latest_stochastic()
             elif feature_name in self.STOCHASTIC_RSI_FEATURES:
                 features["stochastic_rsi"] = self._latest_stochastic_rsi()
             elif feature_name in self.MACD_FEATURES:
                 features["macd"] = self._latest_macd(close)
+            elif feature_name in self.ATR_FEATURES:
+                features["atr"] = self._latest_atr(close)
+            elif feature_name in self.ADX_FEATURES:
+                features["adx"] = self._latest_adx()
         return {column: features.get(column) for column in self.output_columns}
 
     def encode_vector(self, candle: Mapping[str, Any]) -> list[Any]:
@@ -202,30 +261,67 @@ class CandleFeatureBuilder:
             )
 
         if self._has_indicator_feature():
-            indicator_candles = candles[
-                ["timestamp", "open", "high", "low", "close", "volume"]
-            ].to_dict("records")
+            indicator_candles = None
+
+            if self._has_full_indicator_bundle():
+                for period in self.rsi_periods:
+                    output[self._period_column("rsi", period)] = (
+                        RelativeStrengthIndex.compute_dataframe(
+                            close,
+                            period=period,
+                            normalize=True,
+                        ).fillna(0.0)
+                    )
+
+                for period in self.stochastic_periods:
+                    output[self._period_column("stochastic", period)] = (
+                        StochasticOscillator.compute_dataframe(
+                            high,
+                            low,
+                            close,
+                            period=period,
+                            normalize=True,
+                        ).fillna(0.0)
+                    )
+
+                for period in self.stochastic_rsi_periods:
+                    output[self._period_column("stochastic_rsi", period)] = (
+                        StochasticRSI.compute_dataframe(
+                            close,
+                            rsi_period=period,
+                            stoch_period=period,
+                            normalize=True,
+                        ).fillna(0.0)
+                    )
 
             if self._has_rsi_feature():
-                output["rsi"] = self._indicator_series(
-                    RelativeStrengthIndex(
-                        period=self.rsi_period,
-                        normalize=True,
-                    ),
-                    indicator_candles,
-                    candles.index,
-                )
+                output["rsi"] = RelativeStrengthIndex.compute_dataframe(
+                    close,
+                    period=self.rsi_period,
+                    normalize=True,
+                ).fillna(0.0)
+
+            if self._has_stochastic_feature():
+                output["stochastic"] = StochasticOscillator.compute_dataframe(
+                    high,
+                    low,
+                    close,
+                    period=self.stochastic_period,
+                    normalize=True,
+                ).fillna(0.0)
 
             if self._has_stochastic_rsi_feature():
-                output["stochastic_rsi"] = self._indicator_series(
-                    StochasticRSI(
-                        rsi_period=self.stochastic_rsi_period,
-                        stoch_period=self.stochastic_rsi_stoch_period,
-                        normalize=True,
-                    ),
-                    indicator_candles,
-                    candles.index,
-                )
+                output["stochastic_rsi"] = StochasticRSI.compute_dataframe(
+                    close,
+                    rsi_period=self.stochastic_rsi_period,
+                    stoch_period=self.stochastic_rsi_stoch_period,
+                    normalize=True,
+                ).fillna(0.0)
+
+            if self._has_macd_feature() or self._has_adx_feature():
+                indicator_candles = candles[
+                    ["timestamp", "open", "high", "low", "close", "volume"]
+                ].to_dict("records")
 
             if self._has_macd_feature():
                 macd = self._indicator_series(
@@ -233,10 +329,29 @@ class CandleFeatureBuilder:
                         fast_period=self.macd_fast_period,
                         slow_period=self.macd_slow_period,
                     ),
-                    indicator_candles,
+                    indicator_candles or [],
                     candles.index,
                 )
                 output["macd"] = self._normalize_macd_series(macd, close)
+
+            if self._has_atr_feature():
+                atr = AverageTrueRange.compute_dataframe(
+                    high,
+                    low,
+                    close,
+                    period=self.atr_period,
+                ).fillna(0.0)
+                output["atr"] = self._normalize_atr_series(atr, close)
+
+            if self._has_adx_feature():
+                output["adx"] = self._indicator_series(
+                    AverageDirectionalIndex(
+                        period=self.adx_period,
+                        normalize=True,
+                    ),
+                    indicator_candles or [],
+                    candles.index,
+                )
 
         return output.reindex(columns=self.output_columns)
 
@@ -269,13 +384,19 @@ class CandleFeatureBuilder:
             elif feature_name == self.LOG_VOLUME_ZSCORE_FEATURE:
                 columns.append(self.LOG_VOLUME_ZSCORE_FEATURE)
             elif feature_name in self.INDICATOR_FEATURES:
-                columns.extend(["rsi", "stochastic_rsi", "macd"])
+                columns.extend(self._indicator_output_columns())
             elif feature_name in self.RSI_FEATURES:
                 columns.append("rsi")
+            elif feature_name in self.STOCHASTIC_FEATURES:
+                columns.append("stochastic")
             elif feature_name in self.STOCHASTIC_RSI_FEATURES:
                 columns.append("stochastic_rsi")
             elif feature_name in self.MACD_FEATURES:
                 columns.append("macd")
+            elif feature_name in self.ATR_FEATURES:
+                columns.append("atr")
+            elif feature_name in self.ADX_FEATURES:
+                columns.append("adx")
             else:
                 columns.append(feature_name)
         return list(dict.fromkeys(columns))
@@ -285,26 +406,66 @@ class CandleFeatureBuilder:
 
     def _has_indicator_feature(self) -> bool:
         return (
-            self._has_any(self.INDICATOR_FEATURES)
+            self._has_full_indicator_bundle()
             or self._has_rsi_feature()
+            or self._has_stochastic_feature()
             or self._has_stochastic_rsi_feature()
             or self._has_macd_feature()
+            or self._has_atr_feature()
+            or self._has_adx_feature()
         )
 
     def _has_rsi_feature(self) -> bool:
-        return self._has_any(self.INDICATOR_FEATURES) or self._has_any(
-            self.RSI_FEATURES
-        )
+        return self._has_any(self.RSI_FEATURES)
+
+    def _has_stochastic_feature(self) -> bool:
+        return self._has_any(self.STOCHASTIC_FEATURES)
 
     def _has_stochastic_rsi_feature(self) -> bool:
-        return self._has_any(self.INDICATOR_FEATURES) or self._has_any(
-            self.STOCHASTIC_RSI_FEATURES
-        )
+        return self._has_any(self.STOCHASTIC_RSI_FEATURES)
 
     def _has_macd_feature(self) -> bool:
-        return self._has_any(self.INDICATOR_FEATURES) or self._has_any(
-            self.MACD_FEATURES
+        return self._has_full_indicator_bundle() or self._has_any(self.MACD_FEATURES)
+
+    def _has_atr_feature(self) -> bool:
+        return self._has_full_indicator_bundle() or self._has_any(self.ATR_FEATURES)
+
+    def _has_adx_feature(self) -> bool:
+        return self._has_full_indicator_bundle() or self._has_any(self.ADX_FEATURES)
+
+    def _has_full_indicator_bundle(self) -> bool:
+        return self._has_any(self.INDICATOR_FEATURES)
+
+    def _indicator_output_columns(self) -> list[str]:
+        columns = []
+        columns.extend(self._period_column("rsi", period) for period in self.rsi_periods)
+        columns.extend(
+            self._period_column("stochastic", period)
+            for period in self.stochastic_periods
         )
+        columns.extend(
+            self._period_column("stochastic_rsi", period)
+            for period in self.stochastic_rsi_periods
+        )
+        columns.extend(["macd", "atr", "adx"])
+        return columns
+
+    @staticmethod
+    def _period_column(name: str, period: int) -> str:
+        return f"{name}_{period}"
+
+    @staticmethod
+    def _normalize_periods(
+        periods: Iterable[int] | None,
+        *,
+        default: tuple[int, ...],
+    ) -> tuple[int, ...]:
+        resolved = tuple(default if periods is None else periods)
+        if not resolved:
+            raise ValueError("periods must not be empty")
+        if any(period <= 0 for period in resolved):
+            raise ValueError("periods must be greater than 0")
+        return tuple(dict.fromkeys(resolved))
 
     @staticmethod
     def _centered_ratio_series(numerator: Any, denominator: Any) -> Any:
@@ -344,14 +505,43 @@ class CandleFeatureBuilder:
         ) / self.log_volume_zscore_clip
 
     def _encode_indicator_bundle(self, close: float) -> dict[str, float | None]:
-        return {
-            "rsi": self._latest_rsi(),
-            "stochastic_rsi": self._latest_stochastic_rsi(),
+        features = {
             "macd": self._latest_macd(close),
+            "atr": self._latest_atr(close),
+            "adx": self._latest_adx(),
         }
+        features.update(
+            {
+                self._period_column("rsi", period): indicator.compute_point(
+                    self._indicator_candles
+                ).value
+                for period, indicator in self._bundle_rsi_indicators.items()
+            }
+        )
+        features.update(
+            {
+                self._period_column("stochastic", period): indicator.compute_point(
+                    self._indicator_candles
+                ).value
+                for period, indicator in self._bundle_stochastic_indicators.items()
+            }
+        )
+        features.update(
+            {
+                self._period_column(
+                    "stochastic_rsi",
+                    period,
+                ): indicator.compute_point(self._indicator_candles).value
+                for period, indicator in self._bundle_stochastic_rsi_indicators.items()
+            }
+        )
+        return features
 
     def _latest_rsi(self) -> float | None:
         return self._rsi_indicator.compute_point(self._indicator_candles).value
+
+    def _latest_stochastic(self) -> float | None:
+        return self._stochastic_indicator.compute_point(self._indicator_candles).value
 
     def _latest_stochastic_rsi(self) -> float | None:
         return self._stochastic_rsi_indicator.compute_point(
@@ -362,6 +552,13 @@ class CandleFeatureBuilder:
         point = self._macd_indicator.compute_point(self._indicator_candles)
         return self._normalize_macd_value(point.value, close)
 
+    def _latest_atr(self, close: float) -> float | None:
+        point = self._atr_indicator.compute_point(self._indicator_candles)
+        return self._normalize_atr_value(point.value, close)
+
+    def _latest_adx(self) -> float | None:
+        return self._adx_indicator.compute_point(self._indicator_candles).value
+
     @staticmethod
     def _indicator_series(
         indicator: Any,
@@ -369,6 +566,9 @@ class CandleFeatureBuilder:
         index: Any,
     ) -> Any:
         import pandas as pd
+
+        if not candles:
+            return pd.Series(index=index, dtype="float64")
 
         values = [point.value for point in indicator.compute(candles)]
         return pd.Series(values, index=index, dtype="float64").fillna(0.0)
@@ -391,6 +591,25 @@ class CandleFeatureBuilder:
             -self.macd_close_ratio_clip,
             min(self.macd_close_ratio_clip, ratio),
         ) / self.macd_close_ratio_clip
+
+    def _normalize_atr_series(self, atr: Any, close: Any) -> Any:
+        close_ratio = atr.div(close.where(close != 0))
+        return close_ratio.fillna(0.0).map(self._bounded_atr_close_ratio)
+
+    def _normalize_atr_value(self, atr: float | None, close: float) -> float | None:
+        if atr is None:
+            return None
+        if close == 0:
+            return 0.0
+        return self._bounded_atr_close_ratio(atr / close)
+
+    def _bounded_atr_close_ratio(self, ratio: float) -> float:
+        if not isfinite(ratio):
+            return 0.0
+        return max(
+            0.0,
+            min(self.atr_close_ratio_clip, ratio),
+        ) / self.atr_close_ratio_clip
 
     @staticmethod
     def _infer_color_series(upper_wick_size: Any, lower_wick_size: Any) -> Any:

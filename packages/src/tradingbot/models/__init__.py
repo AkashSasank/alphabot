@@ -1,5 +1,6 @@
 """Model exports for tradingbot."""
 
+from tradingbot.models.dataset import CandleWindowDataset, TransformerWindowDataset
 from tradingbot.models.label import (
     DatasetLabeller,
     TripleBarrierLabeller,
@@ -16,9 +17,11 @@ from tradingbot.models.transformer import (
 
 __all__ = [
     "CandleGPT",
+    "CandleWindowDataset",
     "CausalSelfAttention",
     "DatasetLabeller",
     "DecoderOnlyTransformer",
+    "TransformerWindowDataset",
     "TripleBarrierLabeller",
     "TransformerBlock",
     "apply_rope",

@@ -74,15 +74,9 @@ def test_triple_barrier_labeller_labels_raw_candles():
     labels = labeller.label(_raw_candles())
 
     assert labels["timestamp"].tolist() == _raw_candles()["timestamp"].tolist()
-    assert labels["triple_barrier_label"].tolist() == [1, -1, 1, 1, pd.NA, pd.NA]
-    assert labels["triple_barrier_horizon"].tolist() == [1, 1, 2, 2, pd.NA, pd.NA]
-    assert labels["triple_barrier_event"].iloc[:4].tolist() == [
-        "upper",
-        "lower",
-        "vertical",
-        "vertical",
-    ]
-    assert labels["triple_barrier_event"].iloc[4:].isna().all()
+    assert labels["triple_barrier_label_lower"].tolist() == [0, 1, 0, 0, pd.NA, pd.NA]
+    assert labels["triple_barrier_label_neutral"].tolist() == [0, 0, 0, 0, pd.NA, pd.NA]
+    assert labels["triple_barrier_label_upper"].tolist() == [1, 0, 1, 1, pd.NA, pd.NA]
 
 
 def test_triple_barrier_labeller_can_use_neutral_vertical_barrier():
@@ -95,7 +89,26 @@ def test_triple_barrier_labeller_can_use_neutral_vertical_barrier():
 
     labels = labeller.label(_raw_candles())
 
-    assert labels["triple_barrier_label"].tolist() == [1, -1, 0, 0, pd.NA, pd.NA]
+    assert labels["triple_barrier_label_lower"].tolist() == [0, 1, 0, 0, pd.NA, pd.NA]
+    assert labels["triple_barrier_label_neutral"].tolist() == [0, 0, 1, 1, pd.NA, pd.NA]
+    assert labels["triple_barrier_label_upper"].tolist() == [1, 0, 0, 0, pd.NA, pd.NA]
+
+
+def test_triple_barrier_labeller_can_output_fixed_horizon_regression_target():
+    labeller = TripleBarrierLabeller(
+        upper_profit_barrier=5,
+        lower_stop_barrier=5,
+        max_time_horizon=2,
+        output_type="regression",
+    )
+
+    labels = labeller.label(_raw_candles())
+
+    assert labels.columns.tolist() == ["timestamp", "triple_barrier_return"]
+    assert labels["triple_barrier_return"].iloc[:4].tolist() == pytest.approx(
+        [0.0, 0.03, 0.04, (104 / 103) - 1.0]
+    )
+    assert labels["triple_barrier_return"].iloc[4:].isna().all()
 
 
 def test_build_labelled_feature_dataset_combines_features_and_labels():
@@ -120,13 +133,18 @@ def test_build_labelled_feature_dataset_combines_features_and_labels():
         "upper_wick_to_candle_ratio",
         "lower_wick_to_candle_ratio",
         "body_to_candle_ratio",
-        "triple_barrier_label",
-        "triple_barrier_return",
-        "triple_barrier_horizon",
-        "triple_barrier_event",
+        "triple_barrier_label_lower",
+        "triple_barrier_label_neutral",
+        "triple_barrier_label_upper",
     ]
     assert len(dataset) == 4
-    assert dataset["triple_barrier_label"].tolist() == [1, -1, 1, 1]
+    assert dataset[
+        [
+            "triple_barrier_label_lower",
+            "triple_barrier_label_neutral",
+            "triple_barrier_label_upper",
+        ]
+    ].to_numpy().tolist() == [[0, 0, 1], [1, 0, 0], [0, 0, 1], [0, 0, 1]]
 
 
 def test_triple_barrier_labeller_handles_dask_partition_overlap():
@@ -142,15 +160,7 @@ def test_triple_barrier_labeller_handles_dask_partition_overlap():
     pandas_labels = labeller.label(raw)
     dask_labels = labeller.label(dask_raw).compute()
 
-    pdt.assert_frame_equal(
-        dask_labels.drop(columns=["triple_barrier_event"]),
-        pandas_labels.drop(columns=["triple_barrier_event"]),
-        check_dtype=False,
-    )
-    assert dask_labels["triple_barrier_event"].iloc[:4].tolist() == pandas_labels[
-        "triple_barrier_event"
-    ].iloc[:4].tolist()
-    assert dask_labels["triple_barrier_event"].iloc[4:].isna().all()
+    pdt.assert_frame_equal(dask_labels, pandas_labels, check_dtype=False)
 
 
 def test_build_labelled_feature_dataset_handles_dask_dataframe():
@@ -180,11 +190,4 @@ def test_build_labelled_feature_dataset_handles_dask_dataframe():
         labeller,
     ).compute()
 
-    pdt.assert_frame_equal(
-        dask_dataset.drop(columns=["triple_barrier_event"]),
-        pandas_dataset.drop(columns=["triple_barrier_event"]),
-        check_dtype=False,
-    )
-    assert dask_dataset["triple_barrier_event"].tolist() == pandas_dataset[
-        "triple_barrier_event"
-    ].tolist()
+    pdt.assert_frame_equal(dask_dataset, pandas_dataset, check_dtype=False)

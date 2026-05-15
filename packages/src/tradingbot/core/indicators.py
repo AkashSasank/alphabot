@@ -517,6 +517,29 @@ class RelativeStrengthIndex(BaseIndicator):
             return value
         return (value - 50) / 50
 
+    @staticmethod
+    def compute_dataframe(close: Any, period: int = 14, normalize: bool = False) -> Any:
+        """Return RSI as a vectorized pandas Series aligned to ``close``."""
+        import numpy as np
+
+        if period <= 0:
+            raise ValueError("period must be greater than 0")
+
+        delta = close.astype(float).diff()
+        gains = delta.clip(lower=0.0)
+        losses = (-delta).clip(lower=0.0)
+        avg_gain = gains.rolling(window=period, min_periods=period).mean()
+        avg_loss = losses.rolling(window=period, min_periods=period).mean()
+
+        rs = avg_gain.div(avg_loss.where(avg_loss != 0))
+        rsi = 100 - (100 / (1 + rs))
+        rsi = rsi.where(avg_loss != 0, 100.0)
+        rsi = rsi.where(avg_gain.notna() & avg_loss.notna())
+
+        if normalize:
+            rsi = (rsi - 50) / 50
+        return rsi.replace([np.inf, -np.inf], np.nan)
+
 
 class MovingAverageConvergenceDivergence(BaseIndicator):
     """MACD line computed as fast EMA minus slow EMA."""
@@ -740,6 +763,35 @@ class AverageTrueRange(BaseIndicator):
 
         return true_ranges
 
+    @staticmethod
+    def compute_dataframe(
+        high: Any,
+        low: Any,
+        close: Any,
+        period: int = 14,
+    ) -> Any:
+        """Return ATR as a vectorized pandas Series aligned to the input index."""
+        import numpy as np
+        import pandas as pd
+
+        if period <= 0:
+            raise ValueError("period must be greater than 0")
+
+        high = high.astype(float)
+        low = low.astype(float)
+        previous_close = close.astype(float).shift(1)
+        true_range = pd.concat(
+            [
+                high - low,
+                (high - previous_close).abs(),
+                (low - previous_close).abs(),
+            ],
+            axis=1,
+        ).max(axis=1)
+        true_range = true_range.where(previous_close.notna())
+        atr = true_range.rolling(window=period, min_periods=period).mean()
+        return atr.replace([np.inf, -np.inf], np.nan)
+
 
 class AverageDirectionalIndex(BaseIndicator):
     """Average Directional Index (ADX) trend-strength indicator."""
@@ -954,6 +1006,28 @@ class StochasticOscillator(BaseIndicator):
             return value
         return (value - 50) / 50
 
+    @staticmethod
+    def compute_dataframe(
+        high: Any,
+        low: Any,
+        close: Any,
+        period: int = 14,
+        normalize: bool = False,
+    ) -> Any:
+        """Return stochastic %K as a vectorized pandas Series."""
+        import numpy as np
+
+        if period <= 0:
+            raise ValueError("period must be greater than 0")
+
+        lowest_low = low.astype(float).rolling(window=period, min_periods=period).min()
+        highest_high = high.astype(float).rolling(window=period, min_periods=period).max()
+        denominator = highest_high - lowest_low
+        value = ((close.astype(float) - lowest_low) / denominator.where(denominator != 0)) * 100
+        if normalize:
+            value = (value - 50) / 50
+        return value.replace([np.inf, -np.inf], np.nan)
+
 
 class StochasticRSI(BaseIndicator):
     """Stochastic RSI oscillator computed from an RSI series."""
@@ -1060,6 +1134,34 @@ class StochasticRSI(BaseIndicator):
         if value is None or not self.normalize:
             return value
         return (value - 50) / 50
+
+    @staticmethod
+    def compute_dataframe(
+        close: Any,
+        rsi_period: int = 14,
+        stoch_period: int = 14,
+        normalize: bool = False,
+    ) -> Any:
+        """Return StochRSI as a vectorized pandas Series aligned to ``close``."""
+        import numpy as np
+
+        if rsi_period <= 0:
+            raise ValueError("rsi_period must be greater than 0")
+        if stoch_period <= 0:
+            raise ValueError("stoch_period must be greater than 0")
+
+        rsi = RelativeStrengthIndex.compute_dataframe(
+            close,
+            period=rsi_period,
+            normalize=False,
+        )
+        lowest_rsi = rsi.rolling(window=stoch_period, min_periods=stoch_period).min()
+        highest_rsi = rsi.rolling(window=stoch_period, min_periods=stoch_period).max()
+        denominator = highest_rsi - lowest_rsi
+        value = ((rsi - lowest_rsi) / denominator.where(denominator != 0)) * 100
+        if normalize:
+            value = (value - 50) / 50
+        return value.replace([np.inf, -np.inf], np.nan)
 
 
 class OnBalanceVolume(BaseIndicator):
