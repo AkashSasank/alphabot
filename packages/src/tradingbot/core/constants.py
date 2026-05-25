@@ -4,7 +4,13 @@ This module centralizes shared constant-style definitions used across the
 trading core package.
 """
 
-from enum import Enum, StrEnum
+from enum import Enum
+
+try:
+    from enum import StrEnum
+except ImportError:
+    class StrEnum(str, Enum):
+        """Compatibility fallback for Python versions before 3.11."""
 
 
 class CandleColor(str, Enum):
