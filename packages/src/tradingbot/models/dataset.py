@@ -17,7 +17,7 @@ TargetMode = Literal["class_index", "one_hot", "regression"]
 
 
 class TransformerWindowDataset(Dataset):
-    """Window CSV feature rows into ``(context, target)`` Transformer samples.
+    """Window labelled feature rows into ``(context, target)`` Transformer samples.
 
     This generalizes the ``CandleWindowDataset`` from ``notebooks/gpt.ipynb``:
     each item returns a feature window with shape ``context_length x feature_dim``
@@ -39,6 +39,7 @@ class TransformerWindowDataset(Dataset):
         target_mode: TargetMode = "class_index",
         target_offset: int = 1,
         max_rows_per_file: int | None = None,
+        pickle_compression: str | None = "gzip",
     ):
         if context_length <= 0:
             raise ValueError("context_length must be greater than 0.")
@@ -69,6 +70,7 @@ class TransformerWindowDataset(Dataset):
         self.target_mode = target_mode
         self.target_offset = target_offset
         self.max_rows_per_file = max_rows_per_file
+        self.pickle_compression = pickle_compression
 
         self.feature_arrays: list[np.ndarray] = []
         self.target_arrays: list[np.ndarray] = []
@@ -114,7 +116,7 @@ class TransformerWindowDataset(Dataset):
         class_labels = []
 
         for path in self.csv_files:
-            frame = pd.read_csv(path, nrows=self.max_rows_per_file)
+            frame = self._read_frame(path)
             required_columns = self._required_columns()
             missing = [column for column in required_columns if column not in frame.columns]
             if missing:
@@ -156,6 +158,15 @@ class TransformerWindowDataset(Dataset):
             labels = np.concatenate(class_labels)
             minlength = int(labels.max()) + 1 if labels.size else self.target_dim
             self.label_counts = np.bincount(labels, minlength=max(self.target_dim, minlength))
+
+    def _read_frame(self, path: Path) -> pd.DataFrame:
+        suffixes = [suffix.lower() for suffix in path.suffixes]
+        if ".pkl" in suffixes or ".pickle" in suffixes:
+            frame = pd.read_pickle(path, compression=self.pickle_compression)
+            if self.max_rows_per_file is not None:
+                return frame.head(self.max_rows_per_file)
+            return frame
+        return pd.read_csv(path, nrows=self.max_rows_per_file)
 
     def _required_columns(self) -> list[str]:
         columns = list(self.feature_columns)
@@ -203,6 +214,7 @@ class CandleWindowDataset(TransformerWindowDataset):
         context_length: int,
         color_indices: Sequence[int],
         max_rows_per_file: int | None = None,
+        pickle_compression: str | None = "gzip",
     ):
         color_feature_columns = [feature_columns[index] for index in color_indices]
         super().__init__(
@@ -213,6 +225,7 @@ class CandleWindowDataset(TransformerWindowDataset):
             target_mode="class_index",
             target_offset=1,
             max_rows_per_file=max_rows_per_file,
+            pickle_compression=pickle_compression,
         )
         self.color_indices = list(color_indices)
         self.arrays = self.feature_arrays
